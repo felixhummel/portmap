@@ -12,7 +12,7 @@ func isPort(s string) bool {
 }
 
 func isDNSName(s string) bool {
-	if s == "" {
+	if s == "" || s[0] == '-' || s[0] == '.' {
 		return false
 	}
 	for _, c := range s {
@@ -46,7 +46,7 @@ func main() {
 			fatalf("load: %v", err)
 		}
 		before := len(entries)
-		entries = removeInactive(entries)
+		entries = removeInactive(entries, boundPorts())
 		if err := save(entries); err != nil {
 			fatalf("save: %v", err)
 		}

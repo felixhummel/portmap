@@ -107,8 +107,7 @@ func upsert(entries []Entry, e Entry) []Entry {
 	return append(entries, e)
 }
 
-func removeInactive(entries []Entry) []Entry {
-	active := boundPorts()
+func removeInactive(entries []Entry, active map[int]bool) []Entry {
 	var result []Entry
 	for _, e := range entries {
 		if active[e.Port] {
