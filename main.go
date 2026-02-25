@@ -152,6 +152,3 @@ func fatalf(format string, a ...any) {
 	os.Exit(1)
 }
 
-func init() {
-	_ = strings.TrimSpace // suppress unused import if needed
-}
