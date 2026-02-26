@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/jedib0t/go-pretty/v6/table"
 )
 
 func isPort(s string) bool {
@@ -37,54 +41,65 @@ func parseFlags(args []string) (remaining []string, noIngress bool) {
 	return
 }
 
+const helpText = `usage: portmap [port] <name> [--no-ingress]
+       portmap [flags]
+
+Allocate and look up named ports.
+
+flags:
+  -l, --listening         list listening ports with pid and process name
+  -f, --format <fmt>      output format: table, plain, json (default: table)
+      --clean             remove entries whose port is no longer in use
+  -h, --help              show this help
+`
+
+type listeningRow struct {
+	Port    int    `json:"port"`
+	Name    string `json:"name,omitempty"`
+	Ingress string `json:"ingress,omitempty"`
+	PID     int    `json:"pid,omitempty"`
+	Process string `json:"process,omitempty"`
+}
+
 func main() {
 	args := os.Args[1:]
 
-	// portmap -l / --listening  — list listening ports
-	if len(args) == 1 && (args[0] == "-l" || args[0] == "--listening") {
-		entries, err := load()
-		if err != nil {
-			fatalf("load: %v", err)
-		}
-		byPort := map[int]Entry{}
-		for _, e := range entries {
-			byPort[e.Port] = e
-		}
-		portInodes := listeningPorts()
-		procs := socketProcs(portInodes)
-		maxName := 0
-		for port := range portInodes {
-			if e, ok := byPort[port]; ok && len(e.Name) > maxName {
-				maxName = len(e.Name)
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Print(helpText)
+		return
+	}
+
+	// Pre-scan for -l/--listening and -f/--format
+	listening := false
+	format := "table"
+	var filtered []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-l", "--listening":
+			listening = true
+		case "-f", "--format":
+			if i+1 < len(args) {
+				i++
+				format = args[i]
 			}
+		default:
+			filtered = append(filtered, args[i])
 		}
-		for port := 1; port <= 65535; port++ {
-			if _, ok := portInodes[port]; !ok {
-				continue
-			}
-			name := ""
-			ingress := ""
-			if e, ok := byPort[port]; ok {
-				name = e.Name
-				ingress = "ingress"
-				if !e.Ingress {
-					ingress = "no-ingress"
-				}
-			}
-			pid := ""
-			proc := ""
-			if p, ok := procs[port]; ok {
-				pid = strconv.Itoa(p.PID)
-				proc = p.Name
-			}
-			line := fmt.Sprintf("%-5d  %-*s  %-10s  %-6s  %s", port, maxName, name, ingress, pid, proc)
-			fmt.Println(strings.TrimRight(line, " "))
+	}
+
+	if listening {
+		if len(filtered) != 0 {
+			fatalf("usage: portmap -l [-f table|plain|json]")
 		}
+		if format != "table" && format != "plain" && format != "json" {
+			fatalf("unknown format %q; use table, plain, or json", format)
+		}
+		listListening(format)
 		return
 	}
 
 	// portmap --clean
-	if len(args) == 1 && args[0] == "--clean" {
+	if len(filtered) == 1 && filtered[0] == "--clean" {
 		entries, err := load()
 		if err != nil {
 			fatalf("load: %v", err)
@@ -99,7 +114,7 @@ func main() {
 	}
 
 	// portmap (list)
-	if len(args) == 0 {
+	if len(filtered) == 0 {
 		entries, err := load()
 		if err != nil {
 			fatalf("load: %v", err)
@@ -123,7 +138,7 @@ func main() {
 		return
 	}
 
-	positional, noIngress := parseFlags(args)
+	positional, noIngress := parseFlags(filtered)
 
 	switch len(positional) {
 	case 1:
@@ -149,6 +164,77 @@ func main() {
 
 	default:
 		fatalf("usage: portmap [-l] [--clean] [port] <name> [--no-ingress]")
+	}
+}
+
+func listListening(format string) {
+	entries, err := load()
+	if err != nil {
+		fatalf("load: %v", err)
+	}
+	byPort := map[int]Entry{}
+	for _, e := range entries {
+		byPort[e.Port] = e
+	}
+	portInodes := listeningPorts()
+	procs := socketProcs(portInodes)
+
+	var rows []listeningRow
+	for port := 1; port <= 65535; port++ {
+		if _, ok := portInodes[port]; !ok {
+			continue
+		}
+		row := listeningRow{Port: port}
+		if e, ok := byPort[port]; ok {
+			row.Name = e.Name
+			row.Ingress = "ingress"
+			if !e.Ingress {
+				row.Ingress = "no-ingress"
+			}
+		}
+		if p, ok := procs[port]; ok {
+			row.PID = p.PID
+			row.Process = p.Name
+		}
+		rows = append(rows, row)
+	}
+
+	renderListening(rows, format, os.Stdout)
+}
+
+func renderListening(rows []listeningRow, format string, w io.Writer) {
+	switch format {
+	case "json":
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.Encode(rows)
+	case "plain":
+		maxName := 0
+		for _, r := range rows {
+			if len(r.Name) > maxName {
+				maxName = len(r.Name)
+			}
+		}
+		for _, r := range rows {
+			pid := ""
+			if r.PID != 0 {
+				pid = strconv.Itoa(r.PID)
+			}
+			line := fmt.Sprintf("%-5d  %-*s  %-10s  %-6s  %s", r.Port, maxName, r.Name, r.Ingress, pid, r.Process)
+			fmt.Fprintln(w, strings.TrimRight(line, " "))
+		}
+	default: // "table"
+		t := table.NewWriter()
+		t.SetOutputMirror(w)
+		t.AppendHeader(table.Row{"PORT", "NAME", "INGRESS", "PID", "PROCESS"})
+		for _, r := range rows {
+			pid := ""
+			if r.PID != 0 {
+				pid = strconv.Itoa(r.PID)
+			}
+			t.AppendRow(table.Row{r.Port, r.Name, r.Ingress, pid, r.Process})
+		}
+		t.Render()
 	}
 }
 
@@ -195,4 +281,3 @@ func fatalf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "portmap: "+format+"\n", a...)
 	os.Exit(1)
 }
-

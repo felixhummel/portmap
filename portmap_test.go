@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -208,6 +211,99 @@ func TestAllocate(t *testing.T) {
 	}
 	if port == 3000 || port == 3001 {
 		t.Errorf("allocated already registered port %d", port)
+	}
+}
+
+// --- renderListening ---
+
+var testRows = []listeningRow{
+	{Port: 3001, Name: "api.acme", Ingress: "ingress", PID: 42, Process: "node"},
+	{Port: 3002, Name: "db.acme", Ingress: "no-ingress", PID: 99, Process: "postgres"},
+	{Port: 5173, Name: "", Ingress: "", PID: 0, Process: ""},
+}
+
+func TestRenderListeningJSON(t *testing.T) {
+	var buf bytes.Buffer
+	renderListening(testRows, "json", &buf)
+
+	var got []listeningRow
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("invalid json: %v\n%s", err, buf.String())
+	}
+	if len(got) != len(testRows) {
+		t.Fatalf("expected %d rows, got %d", len(testRows), len(got))
+	}
+	if got[0].Port != 3001 || got[0].Name != "api.acme" || got[0].Ingress != "ingress" || got[0].PID != 42 || got[0].Process != "node" {
+		t.Errorf("row 0 mismatch: %+v", got[0])
+	}
+	if got[1].Port != 3002 || got[1].Name != "db.acme" || got[1].Ingress != "no-ingress" || got[1].PID != 99 {
+		t.Errorf("row 1 mismatch: %+v", got[1])
+	}
+	if got[2].Port != 5173 || got[2].PID != 0 || got[2].Name != "" {
+		t.Errorf("row 2 mismatch: %+v", got[2])
+	}
+	// omitempty: zero-value fields must not appear in JSON for row 2
+	// Parse raw JSON array to inspect third element
+	var raw []json.RawMessage
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("raw unmarshal: %v", err)
+	}
+	third := string(raw[2])
+	for _, field := range []string{`"name"`, `"ingress"`, `"pid"`, `"process"`} {
+		if strings.Contains(third, field) {
+			t.Errorf("expected omitempty to drop %s from third row: %s", field, third)
+		}
+	}
+}
+
+func TestRenderListeningPlain(t *testing.T) {
+	var buf bytes.Buffer
+	renderListening(testRows, "plain", &buf)
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d:\n%s", len(lines), buf.String())
+	}
+	if !strings.HasPrefix(lines[0], "3001 ") {
+		t.Errorf("line 0 should start with '3001 ', got: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "api.acme") {
+		t.Errorf("line 0 missing 'api.acme': %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "no-ingress") {
+		t.Errorf("line 1 missing 'no-ingress': %q", lines[1])
+	}
+	if strings.HasSuffix(lines[2], " ") {
+		t.Errorf("line 2 has trailing space: %q", lines[2])
+	}
+}
+
+func TestRenderListeningTable(t *testing.T) {
+	var buf bytes.Buffer
+	renderListening(testRows, "table", &buf)
+	out := buf.String()
+
+	for _, want := range []string{
+		"PORT", "NAME", "INGRESS", "PID", "PROCESS",
+		"3001", "api.acme", "ingress", "42", "node",
+		"3002", "no-ingress",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "+") && !strings.Contains(out, "│") {
+		t.Error("no table borders found")
+	}
+}
+
+func TestRenderListeningValidFormats(t *testing.T) {
+	for _, f := range []string{"table", "plain", "json"} {
+		var buf bytes.Buffer
+		renderListening(testRows, f, &buf)
+		if buf.Len() == 0 {
+			t.Errorf("format %q produced no output", f)
+		}
 	}
 }
 
