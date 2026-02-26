@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 func isPort(s string) bool {
@@ -38,6 +39,49 @@ func parseFlags(args []string) (remaining []string, noIngress bool) {
 
 func main() {
 	args := os.Args[1:]
+
+	// portmap -l / --listening  — list listening ports
+	if len(args) == 1 && (args[0] == "-l" || args[0] == "--listening") {
+		entries, err := load()
+		if err != nil {
+			fatalf("load: %v", err)
+		}
+		byPort := map[int]Entry{}
+		for _, e := range entries {
+			byPort[e.Port] = e
+		}
+		portInodes := listeningPorts()
+		procs := socketProcs(portInodes)
+		maxName := 0
+		for port := range portInodes {
+			if e, ok := byPort[port]; ok && len(e.Name) > maxName {
+				maxName = len(e.Name)
+			}
+		}
+		for port := 1; port <= 65535; port++ {
+			if _, ok := portInodes[port]; !ok {
+				continue
+			}
+			name := ""
+			ingress := ""
+			if e, ok := byPort[port]; ok {
+				name = e.Name
+				ingress = "ingress"
+				if !e.Ingress {
+					ingress = "no-ingress"
+				}
+			}
+			pid := ""
+			proc := ""
+			if p, ok := procs[port]; ok {
+				pid = strconv.Itoa(p.PID)
+				proc = p.Name
+			}
+			line := fmt.Sprintf("%-5d  %-*s  %-10s  %-6s  %s", port, maxName, name, ingress, pid, proc)
+			fmt.Println(strings.TrimRight(line, " "))
+		}
+		return
+	}
 
 	// portmap --clean
 	if len(args) == 1 && args[0] == "--clean" {
@@ -100,11 +144,11 @@ func main() {
 			}
 			setOrGet(name, port, noIngress)
 		} else {
-			fatalf("usage: portmap [port] <name> [--no-ingress]")
+			fatalf("usage: portmap [-l] [--clean] [port] <name> [--no-ingress]")
 		}
 
 	default:
-		fatalf("usage: portmap [port] <name> [--no-ingress]")
+		fatalf("usage: portmap [-l] [--clean] [port] <name> [--no-ingress]")
 	}
 }
 
