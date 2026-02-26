@@ -178,6 +178,7 @@ func listListening(format string) {
 	}
 	portInodes := listeningPorts()
 	procs := socketProcs(portInodes)
+	docker := dockerPorts()
 
 	var rows []listeningRow
 	for port := 1; port <= 65535; port++ {
@@ -195,6 +196,8 @@ func listListening(format string) {
 		if p, ok := procs[port]; ok {
 			row.PID = p.PID
 			row.Process = p.Name
+		} else if container, ok := docker[port]; ok {
+			row.Process = "docker:" + container
 		}
 		rows = append(rows, row)
 	}

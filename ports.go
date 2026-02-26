@@ -2,8 +2,11 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -101,6 +104,49 @@ func socketProcs(portInodes map[int]uint64) map[int]procInfo {
 		}
 		comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
 		result[port] = procInfo{PID: pid, Name: strings.TrimSpace(string(comm))}
+	}
+	return result
+}
+
+// dockerPorts queries the Docker socket for running containers with published
+// ports. Returns a map from host port to container name. Fails silently if
+// Docker is not available.
+func dockerPorts() map[int]string {
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", "/var/run/docker.sock")
+			},
+		},
+	}
+	resp, err := client.Get("http://localhost/containers/json")
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	var containers []struct {
+		Names []string `json:"Names"`
+		Ports []struct {
+			PublicPort uint16 `json:"PublicPort"`
+			Type       string `json:"Type"`
+		} `json:"Ports"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&containers); err != nil {
+		return nil
+	}
+
+	result := map[int]string{}
+	for _, c := range containers {
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		for _, p := range c.Ports {
+			if p.Type == "tcp" && p.PublicPort != 0 {
+				result[int(p.PublicPort)] = name
+			}
+		}
 	}
 	return result
 }
