@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/pflag"
 )
 
-var version = "0.2.0"
+var version = "0.2.1"
 
 func isPort(s string) bool {
 	_, err := strconv.Atoi(s)
