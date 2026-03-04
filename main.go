@@ -1,7 +1,5 @@
 package main
 
-var version = "0.1.0"
-
 import (
 	"encoding/json"
 	"fmt"
@@ -14,6 +12,8 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/pflag"
 )
+
+var version = "0.1.0"
 
 func isPort(s string) bool {
 	_, err := strconv.Atoi(s)
