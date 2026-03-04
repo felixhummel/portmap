@@ -1,4 +1,4 @@
-# felix-portmap
+# portmap
 Map localhost ports to names.
 
 ## usage
