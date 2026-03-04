@@ -224,7 +224,7 @@ var testRows = []listeningRow{
 
 func TestRenderListeningJSON(t *testing.T) {
 	var buf bytes.Buffer
-	renderListening(testRows, "json", &buf)
+	renderListening(testRows, "json", false, &buf)
 
 	var got []listeningRow
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
@@ -258,7 +258,7 @@ func TestRenderListeningJSON(t *testing.T) {
 
 func TestRenderListeningPlain(t *testing.T) {
 	var buf bytes.Buffer
-	renderListening(testRows, "plain", &buf)
+	renderListening(testRows, "plain", false, &buf)
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 
 	if len(lines) != 3 {
@@ -280,7 +280,7 @@ func TestRenderListeningPlain(t *testing.T) {
 
 func TestRenderListeningTable(t *testing.T) {
 	var buf bytes.Buffer
-	renderListening(testRows, "table", &buf)
+	renderListening(testRows, "table", false, &buf)
 	out := buf.String()
 
 	for _, want := range []string{
@@ -300,7 +300,7 @@ func TestRenderListeningTable(t *testing.T) {
 func TestRenderListeningValidFormats(t *testing.T) {
 	for _, f := range []string{"table", "plain", "json"} {
 		var buf bytes.Buffer
-		renderListening(testRows, f, &buf)
+		renderListening(testRows, f, false, &buf)
 		if buf.Len() == 0 {
 			t.Errorf("format %q produced no output", f)
 		}

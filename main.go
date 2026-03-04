@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
 	"github.com/jedib0t/go-pretty/v6/table"
+	"github.com/spf13/pflag"
 )
 
 func isPort(s string) bool {
@@ -48,6 +50,7 @@ Allocate and look up named ports.
 
 flags:
   -l, --listening         list listening ports with pid and process name
+  -v, --verbose           include command params in process column (with -l)
   -f, --format <fmt>      output format: table, plain, json (default: table)
       --clean             remove entries whose port is no longer in use
   -h, --help              show this help
@@ -59,47 +62,42 @@ type listeningRow struct {
 	Ingress string `json:"ingress,omitempty"`
 	PID     int    `json:"pid,omitempty"`
 	Process string `json:"process,omitempty"`
+	Params  string `json:"params,omitempty"`
 }
 
 func main() {
-	args := os.Args[1:]
+	flags := pflag.NewFlagSet("portmap", pflag.ContinueOnError)
+	flags.Usage = func() { fmt.Print(helpText) }
 
-	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+	listening := flags.BoolP("listening", "l", false, "list listening ports")
+	verbose := flags.BoolP("verbose", "v", false, "include command params in process column (with -l)")
+	format := flags.StringP("format", "f", "table", "output format: table, plain, json")
+	help := flags.BoolP("help", "h", false, "show this help")
+
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		fatalf("%v", err)
+	}
+
+	if *help {
 		fmt.Print(helpText)
 		return
 	}
 
-	// Pre-scan for -l/--listening and -f/--format
-	listening := false
-	format := "table"
-	var filtered []string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-l", "--listening":
-			listening = true
-		case "-f", "--format":
-			if i+1 < len(args) {
-				i++
-				format = args[i]
-			}
-		default:
-			filtered = append(filtered, args[i])
-		}
-	}
+	rest := flags.Args()
 
-	if listening {
-		if len(filtered) != 0 {
-			fatalf("usage: portmap -l [-f table|plain|json]")
+	if *listening {
+		if len(rest) != 0 {
+			fatalf("usage: portmap -l [-v] [-f table|plain|json]")
 		}
-		if format != "table" && format != "plain" && format != "json" {
-			fatalf("unknown format %q; use table, plain, or json", format)
+		if *format != "table" && *format != "plain" && *format != "json" {
+			fatalf("unknown format %q; use table, plain, or json", *format)
 		}
-		listListening(format)
+		listListening(*format, *verbose)
 		return
 	}
 
 	// portmap --clean
-	if len(filtered) == 1 && filtered[0] == "--clean" {
+	if len(rest) == 1 && rest[0] == "--clean" {
 		entries, err := load()
 		if err != nil {
 			fatalf("load: %v", err)
@@ -114,7 +112,7 @@ func main() {
 	}
 
 	// portmap (list)
-	if len(filtered) == 0 {
+	if len(rest) == 0 {
 		entries, err := load()
 		if err != nil {
 			fatalf("load: %v", err)
@@ -138,7 +136,7 @@ func main() {
 		return
 	}
 
-	positional, noIngress := parseFlags(filtered)
+	positional, noIngress := parseFlags(rest)
 
 	switch len(positional) {
 	case 1:
@@ -167,7 +165,7 @@ func main() {
 	}
 }
 
-func listListening(format string) {
+func listListening(format string, verbose bool) {
 	entries, err := load()
 	if err != nil {
 		fatalf("load: %v", err)
@@ -196,16 +194,77 @@ func listListening(format string) {
 		if p, ok := procs[port]; ok {
 			row.PID = p.PID
 			row.Process = p.Name
+			if verbose {
+				row.Params = procParams(p.PID)
+			}
 		} else if container, ok := docker[port]; ok {
 			row.Process = "docker:" + container
 		}
 		rows = append(rows, row)
 	}
 
-	renderListening(rows, format, os.Stdout)
+	withPager(func(w io.Writer) {
+		renderListening(rows, format, verbose, w)
+	})
 }
 
-func renderListening(rows []listeningRow, format string, w io.Writer) {
+// withPager pipes fn's output through $PAGER (default: less -S) when stdout
+// is a terminal. Falls back to writing directly if pager can't be started.
+func withPager(fn func(io.Writer)) {
+	fi, err := os.Stdout.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		fn(os.Stdout)
+		return
+	}
+
+	pagerCmd := os.Getenv("PAGER")
+	var cmd *exec.Cmd
+	if pagerCmd != "" {
+		cmd = exec.Command("sh", "-c", pagerCmd)
+	} else {
+		cmd = exec.Command("less", "-S")
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	pipe, err := cmd.StdinPipe()
+	if err != nil {
+		fn(os.Stdout)
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		fn(os.Stdout)
+		return
+	}
+
+	fn(pipe)
+	pipe.Close()
+	cmd.Wait()
+}
+
+// procParams returns the command-line arguments (argv[1:]) for the given pid,
+// joined by spaces. Returns "" on error or if there are no arguments.
+func procParams(pid int) string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	parts := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	if len(parts) <= 1 {
+		return ""
+	}
+	return strings.Join(parts[1:], " ")
+}
+
+func renderListening(rows []listeningRow, format string, verbose bool, w io.Writer) {
+	// processCol returns the display value for the process column.
+	processCol := func(r listeningRow) string {
+		if verbose && r.Params != "" {
+			return r.Process + " " + r.Params
+		}
+		return r.Process
+	}
+
 	switch format {
 	case "json":
 		enc := json.NewEncoder(w)
@@ -223,7 +282,7 @@ func renderListening(rows []listeningRow, format string, w io.Writer) {
 			if r.PID != 0 {
 				pid = strconv.Itoa(r.PID)
 			}
-			line := fmt.Sprintf("%-5d  %-*s  %-10s  %-6s  %s", r.Port, maxName, r.Name, r.Ingress, pid, r.Process)
+			line := fmt.Sprintf("%-5d  %-*s  %-10s  %-6s  %s", r.Port, maxName, r.Name, r.Ingress, pid, processCol(r))
 			fmt.Fprintln(w, strings.TrimRight(line, " "))
 		}
 	default: // "table"
@@ -235,7 +294,7 @@ func renderListening(rows []listeningRow, format string, w io.Writer) {
 			if r.PID != 0 {
 				pid = strconv.Itoa(r.PID)
 			}
-			t.AppendRow(table.Row{r.Port, r.Name, r.Ingress, pid, r.Process})
+			t.AppendRow(table.Row{r.Port, r.Name, r.Ingress, pid, processCol(r)})
 		}
 		t.Render()
 	}
@@ -250,6 +309,9 @@ func setOrGet(name string, explicitPort int, noIngress bool) {
 	}
 
 	if existing, ok := findByName(entries, name); ok {
+		if explicitPort >= 0 && existing.Port != explicitPort {
+			fatalf("duplicate name %s", name)
+		}
 		// update flags if changed
 		changed := existing.Ingress == noIngress // ingress default true, noIngress flips it
 		if changed {
