@@ -1,3 +1,0 @@
-- [ ] `-i, --interface` to show hosts too (same port, different interfaces)
-- [ ] `-l` should have the simple output style
-- [ ] get rid of table output lib

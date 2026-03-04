@@ -6,10 +6,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/pflag"
 )
 
@@ -52,14 +52,16 @@ Allocate and look up named ports.
 
 flags:
   -l, --listening         list listening ports with pid and process name
+  -i, --interface         show host/interface column (with -l)
   -v, --verbose           include command params in process column (with -l)
-  -f, --format <fmt>      output format: table, plain, json (default: table)
+  -f, --format <fmt>      output format: plain, json (default: plain)
       --clean             remove entries whose port is no longer in use
   -h, --help              show this help
 `
 
 type listeningRow struct {
 	Port    int    `json:"port"`
+	Host    string `json:"host,omitempty"`
 	Name    string `json:"name,omitempty"`
 	Ingress string `json:"ingress,omitempty"`
 	PID     int    `json:"pid,omitempty"`
@@ -72,8 +74,9 @@ func main() {
 	flags.Usage = func() { fmt.Print(helpText) }
 
 	listening := flags.BoolP("listening", "l", false, "list listening ports")
+	iface := flags.BoolP("interface", "i", false, "show host/interface column (with -l)")
 	verbose := flags.BoolP("verbose", "v", false, "include command params in process column (with -l)")
-	format := flags.StringP("format", "f", "table", "output format: table, plain, json")
+	format := flags.StringP("format", "f", "plain", "output format: plain, json")
 	help := flags.BoolP("help", "h", false, "show this help")
 
 	if err := flags.Parse(os.Args[1:]); err != nil {
@@ -89,12 +92,12 @@ func main() {
 
 	if *listening {
 		if len(rest) != 0 {
-			fatalf("usage: portmap -l [-v] [-f table|plain|json]")
+			fatalf("usage: portmap -l [-i] [-v] [-f plain|json]")
 		}
-		if *format != "table" && *format != "plain" && *format != "json" {
-			fatalf("unknown format %q; use table, plain, or json", *format)
+		if *format != "plain" && *format != "json" {
+			fatalf("unknown format %q; use plain or json", *format)
 		}
-		listListening(*format, *verbose)
+		listListening(*format, *verbose, *iface)
 		return
 	}
 
@@ -167,7 +170,7 @@ func main() {
 	}
 }
 
-func listListening(format string, verbose bool) {
+func listListening(format string, verbose bool, showInterface bool) {
 	entries, err := load()
 	if err != nil {
 		fatalf("load: %v", err)
@@ -176,37 +179,48 @@ func listListening(format string, verbose bool) {
 	for _, e := range entries {
 		byPort[e.Port] = e
 	}
-	portInodes := listeningPorts()
-	procs := socketProcs(portInodes)
+	bindings := listeningPorts()
+	procs := socketProcs(bindings)
 	docker := dockerPorts()
 
-	var rows []listeningRow
-	for port := 1; port <= 65535; port++ {
-		if _, ok := portInodes[port]; !ok {
-			continue
+	sort.Slice(bindings, func(i, j int) bool {
+		if bindings[i].Port != bindings[j].Port {
+			return bindings[i].Port < bindings[j].Port
 		}
-		row := listeningRow{Port: port}
-		if e, ok := byPort[port]; ok {
+		return bindings[i].Host < bindings[j].Host
+	})
+
+	var rows []listeningRow
+	seen := map[int]bool{}
+	for _, b := range bindings {
+		if !showInterface {
+			if seen[b.Port] {
+				continue
+			}
+			seen[b.Port] = true
+		}
+		row := listeningRow{Port: b.Port, Host: b.Host}
+		if e, ok := byPort[b.Port]; ok {
 			row.Name = e.Name
 			row.Ingress = "ingress"
 			if !e.Ingress {
 				row.Ingress = "no-ingress"
 			}
 		}
-		if p, ok := procs[port]; ok {
+		if p, ok := procs[b.Inode]; ok {
 			row.PID = p.PID
 			row.Process = p.Name
 			if verbose {
 				row.Params = procParams(p.PID)
 			}
-		} else if container, ok := docker[port]; ok {
+		} else if container, ok := docker[b.Port]; ok {
 			row.Process = "docker:" + container
 		}
 		rows = append(rows, row)
 	}
 
 	withPager(func(w io.Writer) {
-		renderListening(rows, format, verbose, w)
+		renderListening(rows, format, verbose, showInterface, w)
 	})
 }
 
@@ -258,7 +272,7 @@ func procParams(pid int) string {
 	return strings.Join(parts[1:], " ")
 }
 
-func renderListening(rows []listeningRow, format string, verbose bool, w io.Writer) {
+func renderListening(rows []listeningRow, format string, verbose bool, showInterface bool, w io.Writer) {
 	// processCol returns the display value for the process column.
 	processCol := func(r listeningRow) string {
 		if verbose && r.Params != "" {
@@ -272,33 +286,30 @@ func renderListening(rows []listeningRow, format string, verbose bool, w io.Writ
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
 		enc.Encode(rows)
-	case "plain":
+	default: // "plain"
 		maxName := 0
+		maxHost := 0
 		for _, r := range rows {
 			if len(r.Name) > maxName {
 				maxName = len(r.Name)
 			}
+			if len(r.Host) > maxHost {
+				maxHost = len(r.Host)
+			}
 		}
 		for _, r := range rows {
 			pid := ""
 			if r.PID != 0 {
 				pid = strconv.Itoa(r.PID)
 			}
-			line := fmt.Sprintf("%-5d  %-*s  %-10s  %-6s  %s", r.Port, maxName, r.Name, r.Ingress, pid, processCol(r))
+			var line string
+			if showInterface {
+				line = fmt.Sprintf("%-5d  %-*s  %-*s  %-10s  %-6s  %s", r.Port, maxHost, r.Host, maxName, r.Name, r.Ingress, pid, processCol(r))
+			} else {
+				line = fmt.Sprintf("%-5d  %-*s  %-10s  %-6s  %s", r.Port, maxName, r.Name, r.Ingress, pid, processCol(r))
+			}
 			fmt.Fprintln(w, strings.TrimRight(line, " "))
 		}
-	default: // "table"
-		t := table.NewWriter()
-		t.SetOutputMirror(w)
-		t.AppendHeader(table.Row{"PORT", "NAME", "INGRESS", "PID", "PROCESS"})
-		for _, r := range rows {
-			pid := ""
-			if r.PID != 0 {
-				pid = strconv.Itoa(r.PID)
-			}
-			t.AppendRow(table.Row{r.Port, r.Name, r.Ingress, pid, processCol(r)})
-		}
-		t.Render()
 	}
 }
 

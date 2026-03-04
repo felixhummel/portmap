@@ -224,7 +224,7 @@ var testRows = []listeningRow{
 
 func TestRenderListeningJSON(t *testing.T) {
 	var buf bytes.Buffer
-	renderListening(testRows, "json", false, &buf)
+	renderListening(testRows, "json", false, false, &buf)
 
 	var got []listeningRow
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
@@ -258,7 +258,7 @@ func TestRenderListeningJSON(t *testing.T) {
 
 func TestRenderListeningPlain(t *testing.T) {
 	var buf bytes.Buffer
-	renderListening(testRows, "plain", false, &buf)
+	renderListening(testRows, "plain", false, false, &buf)
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 
 	if len(lines) != 3 {
@@ -278,29 +278,31 @@ func TestRenderListeningPlain(t *testing.T) {
 	}
 }
 
-func TestRenderListeningTable(t *testing.T) {
+func TestRenderListeningInterface(t *testing.T) {
+	rows := []listeningRow{
+		{Port: 3001, Host: "0.0.0.0", Name: "api.acme", Ingress: "ingress", PID: 42, Process: "node"},
+		{Port: 3001, Host: "127.0.0.1", Name: "api.acme", Ingress: "ingress", PID: 42, Process: "node"},
+	}
 	var buf bytes.Buffer
-	renderListening(testRows, "table", false, &buf)
+	renderListening(rows, "plain", false, true, &buf)
 	out := buf.String()
 
-	for _, want := range []string{
-		"PORT", "NAME", "INGRESS", "PID", "PROCESS",
-		"3001", "api.acme", "ingress", "42", "node",
-		"3002", "no-ingress",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q\n%s", want, out)
-		}
+	if !strings.Contains(out, "0.0.0.0") {
+		t.Errorf("output missing 0.0.0.0:\n%s", out)
 	}
-	if !strings.Contains(out, "+") && !strings.Contains(out, "│") {
-		t.Error("no table borders found")
+	if !strings.Contains(out, "127.0.0.1") {
+		t.Errorf("output missing 127.0.0.1:\n%s", out)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d:\n%s", len(lines), out)
 	}
 }
 
 func TestRenderListeningValidFormats(t *testing.T) {
-	for _, f := range []string{"table", "plain", "json"} {
+	for _, f := range []string{"plain", "json"} {
 		var buf bytes.Buffer
-		renderListening(testRows, f, false, &buf)
+		renderListening(testRows, f, false, false, &buf)
 		if buf.Len() == 0 {
 			t.Errorf("format %q produced no output", f)
 		}

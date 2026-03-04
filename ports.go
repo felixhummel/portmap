@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,10 +17,40 @@ import (
 const portRangeMin = 3000
 const portRangeMax = 4000
 
-// listeningPorts returns port→inode for TCP LISTEN sockets via /proc/net/tcp{,6}.
-func listeningPorts() map[int]uint64 {
-	ports := map[int]uint64{}
+type portBinding struct {
+	Port  int
+	Host  string
+	Inode uint64
+}
+
+func parseIPv4Hex(s string) string {
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != 4 {
+		return s
+	}
+	return net.IP{b[3], b[2], b[1], b[0]}.String()
+}
+
+func parseIPv6Hex(s string) string {
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != 16 {
+		return s
+	}
+	ip := make(net.IP, 16)
+	for i := 0; i < 4; i++ {
+		ip[i*4+0] = b[i*4+3]
+		ip[i*4+1] = b[i*4+2]
+		ip[i*4+2] = b[i*4+1]
+		ip[i*4+3] = b[i*4+0]
+	}
+	return ip.String()
+}
+
+// listeningPorts returns all TCP LISTEN socket bindings from /proc/net/tcp{,6}.
+func listeningPorts() []portBinding {
+	var bindings []portBinding
 	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		isV6 := strings.HasSuffix(path, "6")
 		f, err := os.Open(path)
 		if err != nil {
 			continue
@@ -44,11 +75,17 @@ func listeningPorts() map[int]uint64 {
 			if err != nil {
 				continue
 			}
-			ports[int(port)] = inode
+			var host string
+			if isV6 {
+				host = parseIPv6Hex(parts[0])
+			} else {
+				host = parseIPv4Hex(parts[0])
+			}
+			bindings = append(bindings, portBinding{Port: int(port), Host: host, Inode: inode})
 		}
 		f.Close()
 	}
-	return ports
+	return bindings
 }
 
 type procInfo struct {
@@ -56,12 +93,12 @@ type procInfo struct {
 	Name string
 }
 
-// socketProcs maps each port to the process that owns its listening socket.
-func socketProcs(portInodes map[int]uint64) map[int]procInfo {
+// socketProcs maps each socket inode to the process that owns it.
+func socketProcs(bindings []portBinding) map[uint64]procInfo {
 	// build set of inodes we care about
 	want := map[uint64]bool{}
-	for _, inode := range portInodes {
-		want[inode] = true
+	for _, b := range bindings {
+		want[b.Inode] = true
 	}
 
 	// scan /proc/<pid>/fd to find inode→pid
@@ -96,14 +133,10 @@ func socketProcs(portInodes map[int]uint64) map[int]procInfo {
 		}
 	}
 
-	result := map[int]procInfo{}
-	for port, inode := range portInodes {
-		pid, ok := inodePID[inode]
-		if !ok {
-			continue
-		}
+	result := map[uint64]procInfo{}
+	for inode, pid := range inodePID {
 		comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-		result[port] = procInfo{PID: pid, Name: strings.TrimSpace(string(comm))}
+		result[inode] = procInfo{PID: pid, Name: strings.TrimSpace(string(comm))}
 	}
 	return result
 }
