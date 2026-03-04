@@ -5,7 +5,7 @@ env:
   - CGO_ENABLED=0
 
 goos: linux
-goarch: amd64
+goarch: arm64
 
-binary: portmap-linux-amd64
+binary: portmap-linux-arm64
 main: .
