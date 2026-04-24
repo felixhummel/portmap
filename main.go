@@ -186,17 +186,27 @@ func main() {
 			if len(args) != 1 {
 				return fmt.Errorf("usage: portmap remove [-a] <name|port>")
 			}
+			arg := args[0]
 			var ok bool
-			if isPort(args[0]) {
-				port, _ := strconv.Atoi(args[0])
+			if isPort(arg) {
+				port, _ := strconv.Atoi(arg)
 				entries, ok = removeByPort(entries, port)
 				if !ok {
-					return fmt.Errorf("port not found: %s", args[0])
+					return fmt.Errorf("port not found: %s", arg)
+				}
+			} else if isGlob(arg) {
+				before := len(entries)
+				entries, err = removeByGlob(entries, arg)
+				if err != nil {
+					return err
+				}
+				if len(entries) == before {
+					return fmt.Errorf("no entries matched %q", arg)
 				}
 			} else {
-				entries, ok = removeByName(entries, args[0])
+				entries, ok = removeByName(entries, arg)
 				if !ok {
-					return fmt.Errorf("name not found: %q", args[0])
+					return fmt.Errorf("name not found: %q", arg)
 				}
 			}
 			return save(entries)

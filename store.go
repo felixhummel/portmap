@@ -9,6 +9,24 @@ import (
 	"strings"
 )
 
+func isGlob(s string) bool {
+	return strings.ContainsAny(s, "*?[")
+}
+
+func removeByGlob(entries []Entry, pattern string) ([]Entry, error) {
+	var result []Entry
+	for _, e := range entries {
+		matched, err := filepath.Match(pattern, e.Name)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pattern %q: %w", pattern, err)
+		}
+		if !matched {
+			result = append(result, e)
+		}
+	}
+	return result, nil
+}
+
 type Entry struct {
 	Port int
 	Name string
