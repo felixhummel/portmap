@@ -107,7 +107,7 @@ func main() {
 	var allocStart int
 	var allocFormat string
 	allocCmd := &cobra.Command{
-		Use:     "alloc <name>",
+		Use:     "alloc|add <name>",
 		Aliases: []string{"add"},
 		Short:   "Allocate a new port",
 		Args:    cobra.ExactArgs(1),
@@ -156,7 +156,7 @@ func main() {
 	// remove
 	var removeAll bool
 	removeCmd := &cobra.Command{
-		Use:     "remove [name]",
+		Use:     "remove|rm [name]",
 		Aliases: []string{"rm"},
 		Short:   "Free a port by name",
 		Args:    cobra.ArbitraryArgs,
@@ -211,6 +211,28 @@ func main() {
 			entries = upsert(entries, Entry{Port: port, Name: name})
 			return save(entries)
 		},
+	}
+
+	nameCompleter := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		entries, err := load()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		var names []string
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name, toComplete) {
+				names = append(names, e.Name)
+			}
+		}
+		return names, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	removeCmd.ValidArgsFunction = nameCompleter
+	setCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return nameCompleter(cmd, args, toComplete)
+		}
+		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
 
 	rootCmd.AddCommand(lsCmd, allocCmd, removeCmd, setCmd)
