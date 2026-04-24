@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,43 +227,10 @@ var testRows = []listeningRow{
 	{Port: 5173, Name: "", PID: 0, Process: ""},
 }
 
-func TestRenderListeningJSON(t *testing.T) {
-	var buf bytes.Buffer
-	renderListening(testRows, "json", false, false, &buf)
-
-	var got []listeningRow
-	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
-		t.Fatalf("invalid json: %v\n%s", err, buf.String())
-	}
-	if len(got) != len(testRows) {
-		t.Fatalf("expected %d rows, got %d", len(testRows), len(got))
-	}
-	if got[0].Port != 3001 || got[0].Name != "api.acme" || got[0].PID != 42 || got[0].Process != "node" {
-		t.Errorf("row 0 mismatch: %+v", got[0])
-	}
-	if got[1].Port != 3002 || got[1].Name != "db.acme" || got[1].PID != 99 {
-		t.Errorf("row 1 mismatch: %+v", got[1])
-	}
-	if got[2].Port != 5173 || got[2].PID != 0 || got[2].Name != "" {
-		t.Errorf("row 2 mismatch: %+v", got[2])
-	}
-	// omitempty: zero-value fields must not appear in JSON for row 2
-	// Parse raw JSON array to inspect third element
-	var raw []json.RawMessage
-	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
-		t.Fatalf("raw unmarshal: %v", err)
-	}
-	third := string(raw[2])
-	for _, field := range []string{`"name"`, `"pid"`, `"process"`} {
-		if strings.Contains(third, field) {
-			t.Errorf("expected omitempty to drop %s from third row: %s", field, third)
-		}
-	}
-}
 
 func TestRenderListeningPlain(t *testing.T) {
 	var buf bytes.Buffer
-	renderListening(testRows, "plain", false, false, &buf)
+	renderListening(testRows, false, false, &buf)
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 
 	if len(lines) != 3 {
@@ -290,7 +256,7 @@ func TestRenderListeningInterface(t *testing.T) {
 		{Port: 3001, Host: "127.0.0.1", Name: "api.acme", PID: 42, Process: "node"},
 	}
 	var buf bytes.Buffer
-	renderListening(rows, "plain", false, true, &buf)
+	renderListening(rows, false, true, &buf)
 	out := buf.String()
 
 	if !strings.Contains(out, "0.0.0.0") {
@@ -305,13 +271,11 @@ func TestRenderListeningInterface(t *testing.T) {
 	}
 }
 
-func TestRenderListeningValidFormats(t *testing.T) {
-	for _, f := range []string{"plain", "json"} {
-		var buf bytes.Buffer
-		renderListening(testRows, f, false, false, &buf)
-		if buf.Len() == 0 {
-			t.Errorf("format %q produced no output", f)
-		}
+func TestRenderListeningOutput(t *testing.T) {
+	var buf bytes.Buffer
+	renderListening(testRows, false, false, &buf)
+	if buf.Len() == 0 {
+		t.Error("renderListening produced no output")
 	}
 }
 

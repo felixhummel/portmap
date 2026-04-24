@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -34,12 +33,12 @@ func isDNSName(s string) bool {
 }
 
 type listeningRow struct {
-	Port    int    `json:"port"`
-	Host    string `json:"host,omitempty"`
-	Name    string `json:"name,omitempty"`
-	PID     int    `json:"pid,omitempty"`
-	Process string `json:"process,omitempty"`
-	Params  string `json:"params,omitempty"`
+	Port    int
+	Host    string
+	Name    string
+	PID     int
+	Process string
+	Params  string
 }
 
 func main() {
@@ -86,21 +85,17 @@ func main() {
 
 	// ls
 	var lsAll, lsIface, lsVerbose bool
-	var lsFormat string
 	lsCmd := &cobra.Command{
 		Use:   "ls [prefix]",
 		Short: "List allocated ports (or all listening with -a)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if lsFormat != "plain" && lsFormat != "json" {
-				return fmt.Errorf("unknown format %q; use plain or json", lsFormat)
-			}
 			prefix := ""
 			if len(args) == 1 {
 				prefix = args[0]
 			}
 			if lsAll {
-				listListening(lsFormat, lsVerbose, lsIface)
+				listListening(lsVerbose, lsIface)
 			} else {
 				listStored(prefix)
 			}
@@ -110,20 +105,15 @@ func main() {
 	lsCmd.Flags().BoolVarP(&lsAll, "all", "a", false, "show all listening ports")
 	lsCmd.Flags().BoolVarP(&lsIface, "interface", "i", false, "show host/interface column")
 	lsCmd.Flags().BoolVarP(&lsVerbose, "verbose", "v", false, "include command params in process column")
-	lsCmd.Flags().StringVarP(&lsFormat, "format", "f", "plain", "output format: plain, json")
 
 	// alloc
 	var allocStart int
-	var allocFormat string
 	allocCmd := &cobra.Command{
 		Use:     "alloc [name]",
 		Aliases: []string{"add"},
 		Short:   "Allocate a new port",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if allocFormat != "plain" && allocFormat != "json" {
-				return fmt.Errorf("unknown format %q; use plain or json", allocFormat)
-			}
 			entries, err := load()
 			if err != nil {
 				return fmt.Errorf("load: %w", err)
@@ -146,21 +136,11 @@ func main() {
 			if err := save(entries); err != nil {
 				return fmt.Errorf("save: %w", err)
 			}
-			switch allocFormat {
-			case "json":
-				enc := json.NewEncoder(os.Stdout)
-				enc.Encode(struct {
-					Port int    `json:"port"`
-					Name string `json:"name"`
-				}{port, name})
-			default:
-				fmt.Println(port)
-			}
+			fmt.Println(port)
 			return nil
 		},
 	}
 	allocCmd.Flags().IntVarP(&allocStart, "start", "s", portRangeMin, "minimum port")
-	allocCmd.Flags().StringVarP(&allocFormat, "format", "f", "plain", "output format: plain, json")
 
 	// remove
 	var removeAll bool
@@ -299,7 +279,7 @@ func listStored(prefix string) {
 	}
 }
 
-func listListening(format string, verbose bool, showInterface bool) {
+func listListening(verbose bool, showInterface bool) {
 	entries, err := load()
 	if err != nil {
 		fatalf("load: %v", err)
@@ -345,7 +325,7 @@ func listListening(format string, verbose bool, showInterface bool) {
 	}
 
 	withPager(func(w io.Writer) {
-		renderListening(rows, format, verbose, showInterface, w)
+		renderListening(rows, verbose, showInterface, w)
 	})
 }
 
@@ -396,7 +376,7 @@ func procParams(pid int) string {
 	return strings.Join(parts[1:], " ")
 }
 
-func renderListening(rows []listeningRow, format string, verbose bool, showInterface bool, w io.Writer) {
+func renderListening(rows []listeningRow, verbose bool, showInterface bool, w io.Writer) {
 	processCol := func(r listeningRow) string {
 		if verbose && r.Params != "" {
 			return r.Process + " " + r.Params
@@ -404,13 +384,7 @@ func renderListening(rows []listeningRow, format string, verbose bool, showInter
 		return r.Process
 	}
 
-	switch format {
-	case "json":
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		enc.Encode(rows)
-	default: // "plain"
-		maxName := 0
+	maxName := 0
 		maxHost := 0
 		for _, r := range rows {
 			if len(r.Name) > maxName {
@@ -433,7 +407,6 @@ func renderListening(rows []listeningRow, format string, verbose bool, showInter
 			}
 			fmt.Fprintln(w, strings.TrimRight(line, " "))
 		}
-	}
 }
 
 // setOrGet looks up name; if found, returns existing port. If not found,
