@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go get:*)",
+      "Bash(go build ./... && go test ./... && make install 2>&1)",
+      "Bash(portmap:*)",
+      "Bash(go run:*)",
+      "Bash(jj status:*)",
+      "Bash(jj commit:*)",
+      "Bash(make:*)"
+    ]
+  }
+}

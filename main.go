@@ -45,18 +45,22 @@ func parseFlags(args []string) (remaining []string, noIngress bool) {
 	return
 }
 
-const helpText = `usage: portmap [port] <name> [--no-ingress]
-       portmap [flags]
+const helpText = `usage: portmap ls [-a] [-i] [-v] [-f plain|json]
+       portmap [port] <name> [--no-ingress]
+       portmap --clean
 
 Allocate and look up named ports.
 
-flags:
-  -l, --listening         list listening ports with pid and process name
-  -i, --interface         show host/interface column (with -l)
-  -v, --verbose           include command params in process column (with -l)
-  -f, --format <fmt>      output format: plain, json (default: plain)
-      --clean             remove entries whose port is no longer in use
-  -h, --help              show this help
+subcommands:
+  ls              list allocated ports
+  ls -a           list all listening ports with pid and process name
+
+flags (ls):
+  -a, --all           show all listening ports (not just allocated)
+  -i, --interface     show host/interface column (with -a)
+  -v, --verbose       include command params in process column (with -a)
+  -f, --format <fmt>  output format: plain, json (default: plain)
+  -h, --help          show this help
 `
 
 type listeningRow struct {
@@ -70,39 +74,74 @@ type listeningRow struct {
 }
 
 func main() {
-	flags := pflag.NewFlagSet("portmap", pflag.ContinueOnError)
-	flags.Usage = func() { fmt.Print(helpText) }
+	args := os.Args[1:]
 
-	listening := flags.BoolP("listening", "l", false, "list listening ports")
-	iface := flags.BoolP("interface", "i", false, "show host/interface column (with -l)")
-	verbose := flags.BoolP("verbose", "v", false, "include command params in process column (with -l)")
-	format := flags.StringP("format", "f", "plain", "output format: plain, json")
-	help := flags.BoolP("help", "h", false, "show this help")
-
-	if err := flags.Parse(os.Args[1:]); err != nil {
-		fatalf("%v", err)
-	}
-
-	if *help {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
 		fmt.Print(helpText)
 		return
 	}
 
-	rest := flags.Args()
-
-	if *listening {
-		if len(rest) != 0 {
-			fatalf("usage: portmap -l [-i] [-v] [-f plain|json]")
-		}
-		if *format != "plain" && *format != "json" {
-			fatalf("unknown format %q; use plain or json", *format)
-		}
-		listListening(*format, *verbose, *iface)
+	if args[0] == "ls" {
+		runLS(args[1:])
 		return
 	}
 
+	runDefault(args)
+}
+
+func runLS(args []string) {
+	flags := pflag.NewFlagSet("portmap ls", pflag.ContinueOnError)
+	flags.Usage = func() { fmt.Print(helpText) }
+
+	all := flags.BoolP("all", "a", false, "show all listening ports")
+	iface := flags.BoolP("interface", "i", false, "show host/interface column")
+	verbose := flags.BoolP("verbose", "v", false, "include command params in process column")
+	format := flags.StringP("format", "f", "plain", "output format: plain, json")
+
+	if err := flags.Parse(args); err != nil {
+		fatalf("%v", err)
+	}
+	if len(flags.Args()) != 0 {
+		fatalf("usage: portmap ls [-a] [-i] [-v] [-f plain|json]")
+	}
+	if *format != "plain" && *format != "json" {
+		fatalf("unknown format %q; use plain or json", *format)
+	}
+
+	if *all {
+		listListening(*format, *verbose, *iface)
+	} else {
+		listStored()
+	}
+}
+
+func listStored() {
+	entries, err := load()
+	if err != nil {
+		fatalf("load: %v", err)
+	}
+	if len(entries) == 0 {
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Port < entries[j].Port })
+	maxName := 0
+	for _, e := range entries {
+		if len(e.Name) > maxName {
+			maxName = len(e.Name)
+		}
+	}
+	for _, e := range entries {
+		ingress := "ingress"
+		if !e.Ingress {
+			ingress = "no-ingress"
+		}
+		fmt.Printf("%-5d  %-*s  %s\n", e.Port, maxName, e.Name, ingress)
+	}
+}
+
+func runDefault(args []string) {
 	// portmap --clean
-	if len(rest) == 1 && rest[0] == "--clean" {
+	if len(args) == 1 && args[0] == "--clean" {
 		entries, err := load()
 		if err != nil {
 			fatalf("load: %v", err)
@@ -116,32 +155,7 @@ func main() {
 		return
 	}
 
-	// portmap (list)
-	if len(rest) == 0 {
-		entries, err := load()
-		if err != nil {
-			fatalf("load: %v", err)
-		}
-		if len(entries) == 0 {
-			return
-		}
-		maxName := 0
-		for _, e := range entries {
-			if len(e.Name) > maxName {
-				maxName = len(e.Name)
-			}
-		}
-		for _, e := range entries {
-			ingress := "ingress"
-			if !e.Ingress {
-				ingress = "no-ingress"
-			}
-			fmt.Printf("%-5d  %-*s  %s\n", e.Port, maxName, e.Name, ingress)
-		}
-		return
-	}
-
-	positional, noIngress := parseFlags(rest)
+	positional, noIngress := parseFlags(args)
 
 	switch len(positional) {
 	case 1:
@@ -149,12 +163,10 @@ func main() {
 		if !isDNSName(arg) {
 			fatalf("invalid name: %q", arg)
 		}
-		// portmap api.acme [--no-ingress]
 		setOrGet(arg, -1, noIngress)
 
 	case 2:
 		if isPort(positional[0]) {
-			// portmap 5173 vite [--no-ingress]
 			port, _ := strconv.Atoi(positional[0])
 			name := positional[1]
 			if !isDNSName(name) {
@@ -162,11 +174,11 @@ func main() {
 			}
 			setOrGet(name, port, noIngress)
 		} else {
-			fatalf("usage: portmap [-l] [--clean] [port] <name> [--no-ingress]")
+			fatalf("usage: portmap [--clean] [port] <name> [--no-ingress]")
 		}
 
 	default:
-		fatalf("usage: portmap [-l] [--clean] [port] <name> [--no-ingress]")
+		fatalf("usage: portmap [--clean] [port] <name> [--no-ingress]")
 	}
 }
 
