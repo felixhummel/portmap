@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.3.0"
+var version = "0.3.1"
 
 func isPort(s string) bool {
 	_, err := strconv.Atoi(s)
@@ -385,28 +385,28 @@ func renderListening(rows []listeningRow, verbose bool, showInterface bool, w io
 	}
 
 	maxName := 0
-		maxHost := 0
-		for _, r := range rows {
-			if len(r.Name) > maxName {
-				maxName = len(r.Name)
-			}
-			if len(r.Host) > maxHost {
-				maxHost = len(r.Host)
-			}
+	maxHost := 0
+	for _, r := range rows {
+		if len(r.Name) > maxName {
+			maxName = len(r.Name)
 		}
-		for _, r := range rows {
-			pid := ""
-			if r.PID != 0 {
-				pid = strconv.Itoa(r.PID)
-			}
-			var line string
-			if showInterface {
-				line = fmt.Sprintf("%-5d  %-*s  %-*s  %-6s  %s", r.Port, maxHost, r.Host, maxName, r.Name, pid, processCol(r))
-			} else {
-				line = fmt.Sprintf("%-5d  %-*s  %-6s  %s", r.Port, maxName, r.Name, pid, processCol(r))
-			}
-			fmt.Fprintln(w, strings.TrimRight(line, " "))
+		if len(r.Host) > maxHost {
+			maxHost = len(r.Host)
 		}
+	}
+	for _, r := range rows {
+		pid := ""
+		if r.PID != 0 {
+			pid = strconv.Itoa(r.PID)
+		}
+		var line string
+		if showInterface {
+			line = fmt.Sprintf("%-5d  %-*s  %-*s  %-6s  %s", r.Port, maxHost, r.Host, maxName, r.Name, pid, processCol(r))
+		} else {
+			line = fmt.Sprintf("%-5d  %-*s  %-6s  %s", r.Port, maxName, r.Name, pid, processCol(r))
+		}
+		fmt.Fprintln(w, strings.TrimRight(line, " "))
+	}
 }
 
 // setOrGet looks up name; if found, returns existing port. If not found,
