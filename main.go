@@ -12,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.3.1"
+var version = "dev"
 
 func isPort(s string) bool {
 	_, err := strconv.Atoi(s)

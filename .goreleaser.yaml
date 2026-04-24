@@ -1,0 +1,22 @@
+version: 2
+
+project_name: portmap
+
+builds:
+  - id: portmap
+    main: .
+    binary: portmap
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - format: binary
+
+release:
+  prerelease: auto
