@@ -156,9 +156,9 @@ func main() {
 	// remove
 	var removeAll bool
 	removeCmd := &cobra.Command{
-		Use:     "remove|rm [name]",
+		Use:     "remove|rm [name|port]",
 		Aliases: []string{"rm"},
-		Short:   "Free a port by name",
+		Short:   "Free a port by name or port number",
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entries, err := load()
@@ -175,11 +175,20 @@ func main() {
 				return nil
 			}
 			if len(args) != 1 {
-				return fmt.Errorf("usage: portmap remove [-a] <name>")
+				return fmt.Errorf("usage: portmap remove [-a] <name|port>")
 			}
-			entries, ok := removeByName(entries, args[0])
-			if !ok {
-				return fmt.Errorf("name not found: %q", args[0])
+			var ok bool
+			if isPort(args[0]) {
+				port, _ := strconv.Atoi(args[0])
+				entries, ok = removeByPort(entries, port)
+				if !ok {
+					return fmt.Errorf("port not found: %s", args[0])
+				}
+			} else {
+				entries, ok = removeByName(entries, args[0])
+				if !ok {
+					return fmt.Errorf("name not found: %q", args[0])
+				}
 			}
 			return save(entries)
 		},
@@ -227,7 +236,22 @@ func main() {
 		return names, cobra.ShellCompDirectiveNoFileComp
 	}
 
-	removeCmd.ValidArgsFunction = nameCompleter
+	removeCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		entries, err := load()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+		var completions []string
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name, toComplete) {
+				completions = append(completions, e.Name)
+			}
+			if strings.HasPrefix(strconv.Itoa(e.Port), toComplete) {
+				completions = append(completions, strconv.Itoa(e.Port))
+			}
+		}
+		return completions, cobra.ShellCompDirectiveNoFileComp
+	}
 	setCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) == 0 {
 			return nameCompleter(cmd, args, toComplete)
