@@ -45,15 +45,24 @@ func parseFlags(args []string) (remaining []string, noIngress bool) {
 	return
 }
 
-const helpText = `usage: portmap ls [-a] [-i] [-v] [-f plain|json]
+const helpText = `usage: portmap alloc [--start N] [--no-ingress] [-f plain|json] <name>
+       portmap remove <name>
+       portmap ls [-a] [-i] [-v] [-f plain|json] [prefix]
        portmap [port] <name> [--no-ingress]
        portmap --clean
 
 Allocate and look up named ports.
 
 subcommands:
-  ls              list allocated ports
+  alloc, add      allocate a new port
+  remove, rm      free a port by name
+  ls              list allocated ports (optional name prefix filter)
   ls -a           list all listening ports with pid and process name
+
+flags (alloc):
+  -s, --start N       minimum port to allocate from (default: 3000)
+  -f, --format <fmt>  output format: plain, json (default: plain)
+      --no-ingress    mark port as no-ingress
 
 flags (ls):
   -a, --all           show all listening ports (not just allocated)
@@ -81,12 +90,16 @@ func main() {
 		return
 	}
 
-	if args[0] == "ls" {
+	switch args[0] {
+	case "ls":
 		runLS(args[1:])
-		return
+	case "alloc", "add":
+		runAlloc(args[1:])
+	case "remove", "rm":
+		runRemove(args[1:])
+	default:
+		runDefault(args)
 	}
-
-	runDefault(args)
 }
 
 func runLS(args []string) {
@@ -101,41 +114,122 @@ func runLS(args []string) {
 	if err := flags.Parse(args); err != nil {
 		fatalf("%v", err)
 	}
-	if len(flags.Args()) != 0 {
-		fatalf("usage: portmap ls [-a] [-i] [-v] [-f plain|json]")
+	rest := flags.Args()
+	if len(rest) > 1 {
+		fatalf("usage: portmap ls [-a] [-i] [-v] [-f plain|json] [prefix]")
 	}
 	if *format != "plain" && *format != "json" {
 		fatalf("unknown format %q; use plain or json", *format)
+	}
+	prefix := ""
+	if len(rest) == 1 {
+		prefix = rest[0]
 	}
 
 	if *all {
 		listListening(*format, *verbose, *iface)
 	} else {
-		listStored()
+		listStored(prefix)
 	}
 }
 
-func listStored() {
+func listStored(prefix string) {
 	entries, err := load()
 	if err != nil {
 		fatalf("load: %v", err)
 	}
-	if len(entries) == 0 {
-		return
-	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Port < entries[j].Port })
 	maxName := 0
 	for _, e := range entries {
+		if !strings.HasPrefix(e.Name, prefix) {
+			continue
+		}
 		if len(e.Name) > maxName {
 			maxName = len(e.Name)
 		}
 	}
 	for _, e := range entries {
+		if !strings.HasPrefix(e.Name, prefix) {
+			continue
+		}
 		ingress := "ingress"
 		if !e.Ingress {
 			ingress = "no-ingress"
 		}
 		fmt.Printf("%-5d  %-*s  %s\n", e.Port, maxName, e.Name, ingress)
+	}
+}
+
+func runAlloc(args []string) {
+	flags := pflag.NewFlagSet("portmap alloc", pflag.ContinueOnError)
+	flags.Usage = func() { fmt.Print(helpText) }
+
+	start := flags.IntP("start", "s", portRangeMin, "minimum port")
+	format := flags.StringP("format", "f", "plain", "output format: plain, json")
+	noIngress := flags.Bool("no-ingress", false, "mark as no-ingress")
+
+	if err := flags.Parse(args); err != nil {
+		fatalf("%v", err)
+	}
+	if *format != "plain" && *format != "json" {
+		fatalf("unknown format %q; use plain or json", *format)
+	}
+	rest := flags.Args()
+	if len(rest) != 1 {
+		fatalf("usage: portmap alloc [--start N] [--no-ingress] <name>")
+	}
+	name := rest[0]
+	if !isDNSName(name) {
+		fatalf("invalid name: %q", name)
+	}
+
+	entries, err := load()
+	if err != nil {
+		fatalf("load: %v", err)
+	}
+	if _, ok := findByName(entries, name); ok {
+		fatalf("duplicate name %q", name)
+	}
+
+	port, ok := allocate(entries, *start)
+	if !ok {
+		fatalf("no free port available starting from %d", *start)
+	}
+
+	e := Entry{Port: port, Name: name, Ingress: !*noIngress}
+	entries = upsert(entries, e)
+	if err := save(entries); err != nil {
+		fatalf("save: %v", err)
+	}
+
+	switch *format {
+	case "json":
+		enc := json.NewEncoder(os.Stdout)
+		enc.Encode(struct {
+			Port int    `json:"port"`
+			Name string `json:"name"`
+		}{port, name})
+	default:
+		fmt.Println(port)
+	}
+}
+
+func runRemove(args []string) {
+	if len(args) != 1 {
+		fatalf("usage: portmap remove <name>")
+	}
+	name := args[0]
+
+	entries, err := load()
+	if err != nil {
+		fatalf("load: %v", err)
+	}
+	entries, ok := removeByName(entries, name)
+	if !ok {
+		fatalf("name not found: %q", name)
+	}
+	if err := save(entries); err != nil {
+		fatalf("save: %v", err)
 	}
 }
 
@@ -353,7 +447,7 @@ func setOrGet(name string, explicitPort int, noIngress bool) {
 	port := explicitPort
 	if port < 0 {
 		var ok bool
-		port, ok = allocate(entries)
+		port, ok = allocate(entries, portRangeMin)
 		if !ok {
 			fatalf("no free port available in range %d-%d", portRangeMin, portRangeMax)
 		}

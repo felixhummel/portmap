@@ -197,13 +197,13 @@ func boundPorts() map[int]bool {
 	return bound
 }
 
-func allocate(entries []Entry) (int, bool) {
+func allocate(entries []Entry, min int) (int, bool) {
 	registered := map[int]bool{}
 	for _, e := range entries {
 		registered[e.Port] = true
 	}
 
-	for port := portRangeMin; port <= portRangeMax; port++ {
+	for port := min; port <= portRangeMax; port++ {
 		if registered[port] {
 			continue
 		}

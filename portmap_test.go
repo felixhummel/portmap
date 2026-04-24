@@ -202,7 +202,7 @@ func TestAllocate(t *testing.T) {
 		{Port: 3000, Name: "a"},
 		{Port: 3001, Name: "b"},
 	}
-	port, ok := allocate(entries)
+	port, ok := allocate(entries, portRangeMin)
 	if !ok {
 		t.Fatal("expected allocation to succeed")
 	}
@@ -211,6 +211,35 @@ func TestAllocate(t *testing.T) {
 	}
 	if port == 3000 || port == 3001 {
 		t.Errorf("allocated already registered port %d", port)
+	}
+}
+
+func TestAllocateWithMin(t *testing.T) {
+	port, ok := allocate(nil, 2000)
+	if !ok {
+		t.Fatal("expected allocation to succeed")
+	}
+	if port < 2000 {
+		t.Errorf("expected port >= 2000, got %d", port)
+	}
+}
+
+func TestRemoveByName(t *testing.T) {
+	entries := []Entry{
+		{Port: 3001, Name: "api.acme", Ingress: true},
+		{Port: 3002, Name: "db.acme", Ingress: false},
+	}
+	result, ok := removeByName(entries, "api.acme")
+	if !ok {
+		t.Fatal("expected found=true")
+	}
+	if len(result) != 1 || result[0].Name != "db.acme" {
+		t.Errorf("unexpected result: %+v", result)
+	}
+
+	_, ok = removeByName(entries, "missing")
+	if ok {
+		t.Error("expected found=false for missing name")
 	}
 }
 
@@ -314,7 +343,7 @@ func TestAllocateExhausted(t *testing.T) {
 	for p := portRangeMin; p <= portRangeMax; p++ {
 		entries = append(entries, Entry{Port: p, Name: "x"})
 	}
-	_, ok := allocate(entries)
+	_, ok := allocate(entries, portRangeMin)
 	if ok {
 		t.Error("expected allocation to fail when range is exhausted")
 	}

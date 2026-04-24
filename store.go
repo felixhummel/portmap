@@ -107,6 +107,15 @@ func upsert(entries []Entry, e Entry) []Entry {
 	return append(entries, e)
 }
 
+func removeByName(entries []Entry, name string) ([]Entry, bool) {
+	for i, e := range entries {
+		if e.Name == name {
+			return append(entries[:i], entries[i+1:]...), true
+		}
+	}
+	return entries, false
+}
+
 func removeInactive(entries []Entry, active map[int]bool) []Entry {
 	var result []Entry
 	for _, e := range entries {
