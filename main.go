@@ -74,6 +74,15 @@ func main() {
 	}
 	rootCmd.SilenceErrors = true
 	rootCmd.SilenceUsage = true
+	cobra.AddTemplateFunc("nameWithAliases", func(cmd *cobra.Command) string {
+		if len(cmd.Aliases) == 0 {
+			return cmd.Name()
+		}
+		return cmd.Name() + "|" + strings.Join(cmd.Aliases, "|")
+	})
+	rootCmd.SetUsageTemplate(strings.NewReplacer(
+		"{{rpad .Name .NamePadding }}", "{{rpad (nameWithAliases .) .NamePadding }}",
+	).Replace(rootCmd.UsageTemplate()))
 
 	// ls
 	var lsAll, lsIface, lsVerbose bool
@@ -107,31 +116,31 @@ func main() {
 	var allocStart int
 	var allocFormat string
 	allocCmd := &cobra.Command{
-		Use:     "alloc|add <name>",
+		Use:     "alloc [name]",
 		Aliases: []string{"add"},
 		Short:   "Allocate a new port",
-		Args:    cobra.ExactArgs(1),
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if allocFormat != "plain" && allocFormat != "json" {
 				return fmt.Errorf("unknown format %q; use plain or json", allocFormat)
-			}
-			name := args[0]
-			if !isDNSName(name) {
-				return fmt.Errorf("invalid name: %q", name)
 			}
 			entries, err := load()
 			if err != nil {
 				return fmt.Errorf("load: %w", err)
 			}
-			if _, ok := findByName(entries, name); ok {
-				return fmt.Errorf("duplicate name %q", name)
-			}
 			port, ok := allocate(entries, allocStart)
 			if !ok {
 				return fmt.Errorf("no free port available starting from %d", allocStart)
 			}
-			if e, ok := findByPort(entries, port); ok {
-				return fmt.Errorf("port %d already allocated to %q", port, e.Name)
+			name := fmt.Sprintf("alloc-%d", port)
+			if len(args) == 1 {
+				name = args[0]
+				if !isDNSName(name) {
+					return fmt.Errorf("invalid name: %q", name)
+				}
+				if _, ok := findByName(entries, name); ok {
+					return fmt.Errorf("duplicate name %q", name)
+				}
 			}
 			entries = upsert(entries, Entry{Port: port, Name: name})
 			if err := save(entries); err != nil {
@@ -156,7 +165,7 @@ func main() {
 	// remove
 	var removeAll bool
 	removeCmd := &cobra.Command{
-		Use:     "remove|rm [name|port]",
+		Use:     "remove [name|port]",
 		Aliases: []string{"rm"},
 		Short:   "Free a port by name or port number",
 		Args:    cobra.ArbitraryArgs,
