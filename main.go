@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/pflag"
+	"github.com/spf13/cobra"
 )
 
 var version = "0.2.1"
@@ -33,35 +33,6 @@ func isDNSName(s string) bool {
 	return true
 }
 
-const helpText = `usage: portmap alloc [--start N] [-f plain|json] <name>
-       portmap set <name> <port>
-       portmap remove [-a] <name>
-       portmap ls [-a] [-i] [-v] [-f plain|json] [prefix]
-
-Allocate and look up named ports.
-
-subcommands:
-  alloc, add      allocate a new port
-  set             assign a specific port to a name
-  remove, rm      free a port by name
-  ls              list allocated ports (optional name prefix filter)
-  ls -a           list all listening ports with pid and process name
-
-flags (alloc):
-  -s, --start N       minimum port to allocate from (default: 3000)
-  -f, --format <fmt>  output format: plain, json (default: plain)
-
-flags (remove):
-  -a, --all           remove all inactive entries
-
-flags (ls):
-  -a, --all           show all listening ports (not just allocated)
-  -i, --interface     show host/interface column (with -a)
-  -v, --verbose       include command params in process column (with -a)
-  -f, --format <fmt>  output format: plain, json (default: plain)
-  -h, --help          show this help
-`
-
 type listeningRow struct {
 	Port    int    `json:"port"`
 	Host    string `json:"host,omitempty"`
@@ -72,55 +43,180 @@ type listeningRow struct {
 }
 
 func main() {
-	args := os.Args[1:]
+	rootCmd := &cobra.Command{
+		Use:     "portmap",
+		Short:   "Allocate and look up named dev ports",
+		Version: version,
+		Args:    cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			switch len(args) {
+			case 0:
+				return cmd.Help()
+			case 1:
+				if !isDNSName(args[0]) {
+					return fmt.Errorf("invalid name: %q", args[0])
+				}
+				setOrGet(args[0], -1)
+			case 2:
+				if !isPort(args[0]) {
+					return fmt.Errorf("usage: portmap [port] <name>")
+				}
+				port, _ := strconv.Atoi(args[0])
+				if !isDNSName(args[1]) {
+					return fmt.Errorf("invalid name: %q", args[1])
+				}
+				setOrGet(args[1], port)
+			default:
+				return fmt.Errorf("usage: portmap [port] <name>")
+			}
+			return nil
+		},
+	}
+	rootCmd.SilenceErrors = true
+	rootCmd.SilenceUsage = true
 
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Print(helpText)
-		return
+	// ls
+	var lsAll, lsIface, lsVerbose bool
+	var lsFormat string
+	lsCmd := &cobra.Command{
+		Use:   "ls [prefix]",
+		Short: "List allocated ports (or all listening with -a)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if lsFormat != "plain" && lsFormat != "json" {
+				return fmt.Errorf("unknown format %q; use plain or json", lsFormat)
+			}
+			prefix := ""
+			if len(args) == 1 {
+				prefix = args[0]
+			}
+			if lsAll {
+				listListening(lsFormat, lsVerbose, lsIface)
+			} else {
+				listStored(prefix)
+			}
+			return nil
+		},
+	}
+	lsCmd.Flags().BoolVarP(&lsAll, "all", "a", false, "show all listening ports")
+	lsCmd.Flags().BoolVarP(&lsIface, "interface", "i", false, "show host/interface column")
+	lsCmd.Flags().BoolVarP(&lsVerbose, "verbose", "v", false, "include command params in process column")
+	lsCmd.Flags().StringVarP(&lsFormat, "format", "f", "plain", "output format: plain, json")
+
+	// alloc
+	var allocStart int
+	var allocFormat string
+	allocCmd := &cobra.Command{
+		Use:     "alloc <name>",
+		Aliases: []string{"add"},
+		Short:   "Allocate a new port",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if allocFormat != "plain" && allocFormat != "json" {
+				return fmt.Errorf("unknown format %q; use plain or json", allocFormat)
+			}
+			name := args[0]
+			if !isDNSName(name) {
+				return fmt.Errorf("invalid name: %q", name)
+			}
+			entries, err := load()
+			if err != nil {
+				return fmt.Errorf("load: %w", err)
+			}
+			if _, ok := findByName(entries, name); ok {
+				return fmt.Errorf("duplicate name %q", name)
+			}
+			port, ok := allocate(entries, allocStart)
+			if !ok {
+				return fmt.Errorf("no free port available starting from %d", allocStart)
+			}
+			if e, ok := findByPort(entries, port); ok {
+				return fmt.Errorf("port %d already allocated to %q", port, e.Name)
+			}
+			entries = upsert(entries, Entry{Port: port, Name: name})
+			if err := save(entries); err != nil {
+				return fmt.Errorf("save: %w", err)
+			}
+			switch allocFormat {
+			case "json":
+				enc := json.NewEncoder(os.Stdout)
+				enc.Encode(struct {
+					Port int    `json:"port"`
+					Name string `json:"name"`
+				}{port, name})
+			default:
+				fmt.Println(port)
+			}
+			return nil
+		},
+	}
+	allocCmd.Flags().IntVarP(&allocStart, "start", "s", portRangeMin, "minimum port")
+	allocCmd.Flags().StringVarP(&allocFormat, "format", "f", "plain", "output format: plain, json")
+
+	// remove
+	var removeAll bool
+	removeCmd := &cobra.Command{
+		Use:     "remove [name]",
+		Aliases: []string{"rm"},
+		Short:   "Free a port by name",
+		Args:    cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			entries, err := load()
+			if err != nil {
+				return fmt.Errorf("load: %w", err)
+			}
+			if removeAll {
+				before := len(entries)
+				entries = removeInactive(entries, boundPorts())
+				if err := save(entries); err != nil {
+					return fmt.Errorf("save: %w", err)
+				}
+				fmt.Fprintf(os.Stderr, "removed %d inactive entries\n", before-len(entries))
+				return nil
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("usage: portmap remove [-a] <name>")
+			}
+			entries, ok := removeByName(entries, args[0])
+			if !ok {
+				return fmt.Errorf("name not found: %q", args[0])
+			}
+			return save(entries)
+		},
+	}
+	removeCmd.Flags().BoolVarP(&removeAll, "all", "a", false, "remove all inactive entries")
+
+	// set
+	setCmd := &cobra.Command{
+		Use:   "set <name> <port>",
+		Short: "Assign a specific port to a name",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			if !isDNSName(name) {
+				return fmt.Errorf("invalid name: %q", name)
+			}
+			port, err := strconv.Atoi(args[1])
+			if err != nil {
+				return fmt.Errorf("invalid port: %q", args[1])
+			}
+			entries, err := load()
+			if err != nil {
+				return fmt.Errorf("load: %w", err)
+			}
+			if e, ok := findByName(entries, name); ok && e.Port != port {
+				return fmt.Errorf("name %q already allocated to port %d", name, e.Port)
+			}
+			entries, _ = removeByPort(entries, port)
+			entries = upsert(entries, Entry{Port: port, Name: name})
+			return save(entries)
+		},
 	}
 
-	switch args[0] {
-	case "ls":
-		runLS(args[1:])
-	case "alloc", "add":
-		runAlloc(args[1:])
-	case "remove", "rm":
-		runRemove(args[1:])
-	case "set":
-		runSet(args[1:])
-	default:
-		runDefault(args)
-	}
-}
+	rootCmd.AddCommand(lsCmd, allocCmd, removeCmd, setCmd)
 
-func runLS(args []string) {
-	flags := pflag.NewFlagSet("portmap ls", pflag.ContinueOnError)
-	flags.Usage = func() { fmt.Print(helpText) }
-
-	all := flags.BoolP("all", "a", false, "show all listening ports")
-	iface := flags.BoolP("interface", "i", false, "show host/interface column")
-	verbose := flags.BoolP("verbose", "v", false, "include command params in process column")
-	format := flags.StringP("format", "f", "plain", "output format: plain, json")
-
-	if err := flags.Parse(args); err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		fatalf("%v", err)
-	}
-	rest := flags.Args()
-	if len(rest) > 1 {
-		fatalf("usage: portmap ls [-a] [-i] [-v] [-f plain|json] [prefix]")
-	}
-	if *format != "plain" && *format != "json" {
-		fatalf("unknown format %q; use plain or json", *format)
-	}
-	prefix := ""
-	if len(rest) == 1 {
-		prefix = rest[0]
-	}
-
-	if *all {
-		listListening(*format, *verbose, *iface)
-	} else {
-		listStored(prefix)
 	}
 }
 
@@ -135,149 +231,6 @@ func listStored(prefix string) {
 			continue
 		}
 		fmt.Printf("%-5d  %s\n", e.Port, e.Name)
-	}
-}
-
-func runAlloc(args []string) {
-	flags := pflag.NewFlagSet("portmap alloc", pflag.ContinueOnError)
-	flags.Usage = func() { fmt.Print(helpText) }
-
-	start := flags.IntP("start", "s", portRangeMin, "minimum port")
-	format := flags.StringP("format", "f", "plain", "output format: plain, json")
-	if err := flags.Parse(args); err != nil {
-		fatalf("%v", err)
-	}
-	if *format != "plain" && *format != "json" {
-		fatalf("unknown format %q; use plain or json", *format)
-	}
-	rest := flags.Args()
-	if len(rest) != 1 {
-		fatalf("usage: portmap alloc [--start N] <name>")
-	}
-	name := rest[0]
-	if !isDNSName(name) {
-		fatalf("invalid name: %q", name)
-	}
-
-	entries, err := load()
-	if err != nil {
-		fatalf("load: %v", err)
-	}
-	if _, ok := findByName(entries, name); ok {
-		fatalf("duplicate name %q", name)
-	}
-
-	port, ok := allocate(entries, *start)
-	if !ok {
-		fatalf("no free port available starting from %d", *start)
-	}
-	if e, ok := findByPort(entries, port); ok {
-		fatalf("port %d already allocated to %q", port, e.Name)
-	}
-
-	entries = upsert(entries, Entry{Port: port, Name: name})
-	if err := save(entries); err != nil {
-		fatalf("save: %v", err)
-	}
-
-	switch *format {
-	case "json":
-		enc := json.NewEncoder(os.Stdout)
-		enc.Encode(struct {
-			Port int    `json:"port"`
-			Name string `json:"name"`
-		}{port, name})
-	default:
-		fmt.Println(port)
-	}
-}
-
-func runRemove(args []string) {
-	flags := pflag.NewFlagSet("portmap remove", pflag.ContinueOnError)
-	all := flags.BoolP("all", "a", false, "remove all inactive entries")
-	if err := flags.Parse(args); err != nil {
-		fatalf("%v", err)
-	}
-
-	entries, err := load()
-	if err != nil {
-		fatalf("load: %v", err)
-	}
-
-	if *all {
-		before := len(entries)
-		entries = removeInactive(entries, boundPorts())
-		if err := save(entries); err != nil {
-			fatalf("save: %v", err)
-		}
-		fmt.Fprintf(os.Stderr, "removed %d inactive entries\n", before-len(entries))
-		return
-	}
-
-	rest := flags.Args()
-	if len(rest) != 1 {
-		fatalf("usage: portmap remove [-a] <name>")
-	}
-	entries, ok := removeByName(entries, rest[0])
-	if !ok {
-		fatalf("name not found: %q", rest[0])
-	}
-	if err := save(entries); err != nil {
-		fatalf("save: %v", err)
-	}
-}
-
-func runSet(args []string) {
-	if len(args) != 2 {
-		fatalf("usage: portmap set <name> <port>")
-	}
-	name := args[0]
-	if !isDNSName(name) {
-		fatalf("invalid name: %q", name)
-	}
-	port, err := strconv.Atoi(args[1])
-	if err != nil {
-		fatalf("invalid port: %q", args[1])
-	}
-
-	entries, err := load()
-	if err != nil {
-		fatalf("load: %v", err)
-	}
-	if e, ok := findByName(entries, name); ok && e.Port != port {
-		fatalf("name %q already allocated to port %d", name, e.Port)
-	}
-	// remove any existing entry for this port (may have a different name)
-	entries, _ = removeByPort(entries, port)
-	entries = upsert(entries, Entry{Port: port, Name: name})
-	if err := save(entries); err != nil {
-		fatalf("save: %v", err)
-	}
-}
-
-func runDefault(args []string) {
-	switch len(args) {
-	case 1:
-		arg := args[0]
-		if !isDNSName(arg) {
-			fatalf("invalid name: %q", arg)
-		}
-		setOrGet(arg, -1)
-
-	case 2:
-		if isPort(args[0]) {
-			port, _ := strconv.Atoi(args[0])
-			name := args[1]
-			if !isDNSName(name) {
-				fatalf("invalid name: %q", name)
-			}
-			setOrGet(name, port)
-		} else {
-			fatalf("usage: portmap [port] <name>")
-		}
-
-	default:
-		fatalf("usage: portmap [port] <name>")
 	}
 }
 
@@ -365,8 +318,7 @@ func withPager(fn func(io.Writer)) {
 	cmd.Wait()
 }
 
-// procParams returns the command-line arguments (argv[1:]) for the given pid,
-// joined by spaces. Returns "" on error or if there are no arguments.
+// procParams returns argv[1:] for the given pid, joined by spaces.
 func procParams(pid int) string {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil || len(data) == 0 {
@@ -380,7 +332,6 @@ func procParams(pid int) string {
 }
 
 func renderListening(rows []listeningRow, format string, verbose bool, showInterface bool, w io.Writer) {
-	// processCol returns the display value for the process column.
 	processCol := func(r listeningRow) string {
 		if verbose && r.Params != "" {
 			return r.Process + " " + r.Params
