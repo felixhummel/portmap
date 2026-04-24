@@ -33,28 +33,16 @@ func isDNSName(s string) bool {
 	return true
 }
 
-func parseFlags(args []string) (remaining []string, noIngress bool) {
-	for _, a := range args {
-		switch a {
-		case "--no-ingress":
-			noIngress = true
-		default:
-			remaining = append(remaining, a)
-		}
-	}
-	return
-}
-
-const helpText = `usage: portmap alloc [--start N] [--no-ingress] [-f plain|json] <name>
-       portmap remove <name>
+const helpText = `usage: portmap alloc [--start N] [-f plain|json] <name>
+       portmap set <name> <port>
+       portmap remove [-a] <name>
        portmap ls [-a] [-i] [-v] [-f plain|json] [prefix]
-       portmap [port] <name> [--no-ingress]
-       portmap --clean
 
 Allocate and look up named ports.
 
 subcommands:
   alloc, add      allocate a new port
+  set             assign a specific port to a name
   remove, rm      free a port by name
   ls              list allocated ports (optional name prefix filter)
   ls -a           list all listening ports with pid and process name
@@ -62,7 +50,9 @@ subcommands:
 flags (alloc):
   -s, --start N       minimum port to allocate from (default: 3000)
   -f, --format <fmt>  output format: plain, json (default: plain)
-      --no-ingress    mark port as no-ingress
+
+flags (remove):
+  -a, --all           remove all inactive entries
 
 flags (ls):
   -a, --all           show all listening ports (not just allocated)
@@ -76,7 +66,6 @@ type listeningRow struct {
 	Port    int    `json:"port"`
 	Host    string `json:"host,omitempty"`
 	Name    string `json:"name,omitempty"`
-	Ingress string `json:"ingress,omitempty"`
 	PID     int    `json:"pid,omitempty"`
 	Process string `json:"process,omitempty"`
 	Params  string `json:"params,omitempty"`
@@ -97,6 +86,8 @@ func main() {
 		runAlloc(args[1:])
 	case "remove", "rm":
 		runRemove(args[1:])
+	case "set":
+		runSet(args[1:])
 	default:
 		runDefault(args)
 	}
@@ -139,24 +130,11 @@ func listStored(prefix string) {
 		fatalf("load: %v", err)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Port < entries[j].Port })
-	maxName := 0
 	for _, e := range entries {
 		if !strings.HasPrefix(e.Name, prefix) {
 			continue
 		}
-		if len(e.Name) > maxName {
-			maxName = len(e.Name)
-		}
-	}
-	for _, e := range entries {
-		if !strings.HasPrefix(e.Name, prefix) {
-			continue
-		}
-		ingress := "ingress"
-		if !e.Ingress {
-			ingress = "no-ingress"
-		}
-		fmt.Printf("%-5d  %-*s  %s\n", e.Port, maxName, e.Name, ingress)
+		fmt.Printf("%-5d  %s\n", e.Port, e.Name)
 	}
 }
 
@@ -166,8 +144,6 @@ func runAlloc(args []string) {
 
 	start := flags.IntP("start", "s", portRangeMin, "minimum port")
 	format := flags.StringP("format", "f", "plain", "output format: plain, json")
-	noIngress := flags.Bool("no-ingress", false, "mark as no-ingress")
-
 	if err := flags.Parse(args); err != nil {
 		fatalf("%v", err)
 	}
@@ -176,7 +152,7 @@ func runAlloc(args []string) {
 	}
 	rest := flags.Args()
 	if len(rest) != 1 {
-		fatalf("usage: portmap alloc [--start N] [--no-ingress] <name>")
+		fatalf("usage: portmap alloc [--start N] <name>")
 	}
 	name := rest[0]
 	if !isDNSName(name) {
@@ -195,9 +171,11 @@ func runAlloc(args []string) {
 	if !ok {
 		fatalf("no free port available starting from %d", *start)
 	}
+	if e, ok := findByPort(entries, port); ok {
+		fatalf("port %d already allocated to %q", port, e.Name)
+	}
 
-	e := Entry{Port: port, Name: name, Ingress: !*noIngress}
-	entries = upsert(entries, e)
+	entries = upsert(entries, Entry{Port: port, Name: name})
 	if err := save(entries); err != nil {
 		fatalf("save: %v", err)
 	}
@@ -215,31 +193,18 @@ func runAlloc(args []string) {
 }
 
 func runRemove(args []string) {
-	if len(args) != 1 {
-		fatalf("usage: portmap remove <name>")
+	flags := pflag.NewFlagSet("portmap remove", pflag.ContinueOnError)
+	all := flags.BoolP("all", "a", false, "remove all inactive entries")
+	if err := flags.Parse(args); err != nil {
+		fatalf("%v", err)
 	}
-	name := args[0]
 
 	entries, err := load()
 	if err != nil {
 		fatalf("load: %v", err)
 	}
-	entries, ok := removeByName(entries, name)
-	if !ok {
-		fatalf("name not found: %q", name)
-	}
-	if err := save(entries); err != nil {
-		fatalf("save: %v", err)
-	}
-}
 
-func runDefault(args []string) {
-	// portmap --clean
-	if len(args) == 1 && args[0] == "--clean" {
-		entries, err := load()
-		if err != nil {
-			fatalf("load: %v", err)
-		}
+	if *all {
 		before := len(entries)
 		entries = removeInactive(entries, boundPorts())
 		if err := save(entries); err != nil {
@@ -249,30 +214,70 @@ func runDefault(args []string) {
 		return
 	}
 
-	positional, noIngress := parseFlags(args)
+	rest := flags.Args()
+	if len(rest) != 1 {
+		fatalf("usage: portmap remove [-a] <name>")
+	}
+	entries, ok := removeByName(entries, rest[0])
+	if !ok {
+		fatalf("name not found: %q", rest[0])
+	}
+	if err := save(entries); err != nil {
+		fatalf("save: %v", err)
+	}
+}
 
-	switch len(positional) {
+func runSet(args []string) {
+	if len(args) != 2 {
+		fatalf("usage: portmap set <name> <port>")
+	}
+	name := args[0]
+	if !isDNSName(name) {
+		fatalf("invalid name: %q", name)
+	}
+	port, err := strconv.Atoi(args[1])
+	if err != nil {
+		fatalf("invalid port: %q", args[1])
+	}
+
+	entries, err := load()
+	if err != nil {
+		fatalf("load: %v", err)
+	}
+	if e, ok := findByName(entries, name); ok && e.Port != port {
+		fatalf("name %q already allocated to port %d", name, e.Port)
+	}
+	// remove any existing entry for this port (may have a different name)
+	entries, _ = removeByPort(entries, port)
+	entries = upsert(entries, Entry{Port: port, Name: name})
+	if err := save(entries); err != nil {
+		fatalf("save: %v", err)
+	}
+}
+
+func runDefault(args []string) {
+	switch len(args) {
 	case 1:
-		arg := positional[0]
+		arg := args[0]
 		if !isDNSName(arg) {
 			fatalf("invalid name: %q", arg)
 		}
-		setOrGet(arg, -1, noIngress)
+		setOrGet(arg, -1)
 
 	case 2:
-		if isPort(positional[0]) {
-			port, _ := strconv.Atoi(positional[0])
-			name := positional[1]
+		if isPort(args[0]) {
+			port, _ := strconv.Atoi(args[0])
+			name := args[1]
 			if !isDNSName(name) {
 				fatalf("invalid name: %q", name)
 			}
-			setOrGet(name, port, noIngress)
+			setOrGet(name, port)
 		} else {
-			fatalf("usage: portmap [--clean] [port] <name> [--no-ingress]")
+			fatalf("usage: portmap [port] <name>")
 		}
 
 	default:
-		fatalf("usage: portmap [--clean] [port] <name> [--no-ingress]")
+		fatalf("usage: portmap [port] <name>")
 	}
 }
 
@@ -308,10 +313,6 @@ func listListening(format string, verbose bool, showInterface bool) {
 		row := listeningRow{Port: b.Port, Host: b.Host}
 		if e, ok := byPort[b.Port]; ok {
 			row.Name = e.Name
-			row.Ingress = "ingress"
-			if !e.Ingress {
-				row.Ingress = "no-ingress"
-			}
 		}
 		if p, ok := procs[b.Inode]; ok {
 			row.PID = p.PID
@@ -410,9 +411,9 @@ func renderListening(rows []listeningRow, format string, verbose bool, showInter
 			}
 			var line string
 			if showInterface {
-				line = fmt.Sprintf("%-5d  %-*s  %-*s  %-10s  %-6s  %s", r.Port, maxHost, r.Host, maxName, r.Name, r.Ingress, pid, processCol(r))
+				line = fmt.Sprintf("%-5d  %-*s  %-*s  %-6s  %s", r.Port, maxHost, r.Host, maxName, r.Name, pid, processCol(r))
 			} else {
-				line = fmt.Sprintf("%-5d  %-*s  %-10s  %-6s  %s", r.Port, maxName, r.Name, r.Ingress, pid, processCol(r))
+				line = fmt.Sprintf("%-5d  %-*s  %-6s  %s", r.Port, maxName, r.Name, pid, processCol(r))
 			}
 			fmt.Fprintln(w, strings.TrimRight(line, " "))
 		}
@@ -421,7 +422,7 @@ func renderListening(rows []listeningRow, format string, verbose bool, showInter
 
 // setOrGet looks up name; if found, returns existing port. If not found,
 // allocates (or uses explicit port) and stores the entry. Prints the port.
-func setOrGet(name string, explicitPort int, noIngress bool) {
+func setOrGet(name string, explicitPort int) {
 	entries, err := load()
 	if err != nil {
 		fatalf("load: %v", err)
@@ -430,15 +431,6 @@ func setOrGet(name string, explicitPort int, noIngress bool) {
 	if existing, ok := findByName(entries, name); ok {
 		if explicitPort >= 0 && existing.Port != explicitPort {
 			fatalf("duplicate name %s", name)
-		}
-		// update flags if changed
-		changed := existing.Ingress == noIngress // ingress default true, noIngress flips it
-		if changed {
-			existing.Ingress = !noIngress
-			entries = upsert(entries, existing)
-			if err := save(entries); err != nil {
-				fatalf("save: %v", err)
-			}
 		}
 		fmt.Println(existing.Port)
 		return
@@ -452,9 +444,11 @@ func setOrGet(name string, explicitPort int, noIngress bool) {
 			fatalf("no free port available in range %d-%d", portRangeMin, portRangeMax)
 		}
 	}
+	if e, ok := findByPort(entries, port); ok {
+		fatalf("port %d already allocated to %q", port, e.Name)
+	}
 
-	e := Entry{Port: port, Name: name, Ingress: !noIngress}
-	entries = upsert(entries, e)
+	entries = upsert(entries, Entry{Port: port, Name: name})
 	if err := save(entries); err != nil {
 		fatalf("save: %v", err)
 	}

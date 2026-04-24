@@ -69,26 +69,6 @@ func TestIsPort(t *testing.T) {
 	}
 }
 
-// --- parseFlags ---
-
-func TestParseFlags(t *testing.T) {
-	rem, noIngress := parseFlags([]string{"api.acme", "--no-ingress"})
-	if noIngress != true {
-		t.Error("expected noIngress=true")
-	}
-	if len(rem) != 1 || rem[0] != "api.acme" {
-		t.Errorf("unexpected remaining args: %v", rem)
-	}
-
-	rem, noIngress = parseFlags([]string{"api.acme"})
-	if noIngress != false {
-		t.Error("expected noIngress=false")
-	}
-	if len(rem) != 1 {
-		t.Errorf("unexpected remaining args: %v", rem)
-	}
-}
-
 // --- load / save roundtrip ---
 
 func TestLoadEmpty(t *testing.T) {
@@ -103,9 +83,9 @@ func TestSaveLoad(t *testing.T) {
 	defer withTempStore(t)()
 
 	input := []Entry{
-		{Port: 3001, Name: "api.acme", Ingress: true},
-		{Port: 3002, Name: "db.acme", Ingress: false},
-		{Port: 5173, Name: "vite", Ingress: true},
+		{Port: 3001, Name: "api.acme"},
+		{Port: 3002, Name: "db.acme"},
+		{Port: 5173, Name: "vite"},
 	}
 	mustSave(t, input)
 
@@ -125,16 +105,16 @@ func TestSaveLoadComments(t *testing.T) {
 
 	path := storePath()
 	os.MkdirAll(filepath.Dir(path), 0755)
-	os.WriteFile(path, []byte("# comment\n3001  api.acme\n\n3002  db.acme  no-ingress\n"), 0644)
+	os.WriteFile(path, []byte("# comment\n3001  api.acme\n\n3002  db.acme\n"), 0644)
 
 	entries := mustLoad(t)
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
-	if entries[0].Port != 3001 || entries[0].Name != "api.acme" || !entries[0].Ingress {
+	if entries[0].Port != 3001 || entries[0].Name != "api.acme" {
 		t.Errorf("unexpected entry 0: %+v", entries[0])
 	}
-	if entries[1].Port != 3002 || entries[1].Name != "db.acme" || entries[1].Ingress {
+	if entries[1].Port != 3002 || entries[1].Name != "db.acme" {
 		t.Errorf("unexpected entry 1: %+v", entries[1])
 	}
 }
@@ -143,8 +123,8 @@ func TestSaveLoadComments(t *testing.T) {
 
 func TestFindByName(t *testing.T) {
 	entries := []Entry{
-		{Port: 3001, Name: "api.acme", Ingress: true},
-		{Port: 3002, Name: "db.acme", Ingress: false},
+		{Port: 3001, Name: "api.acme"},
+		{Port: 3002, Name: "db.acme"},
 	}
 	e, ok := findByName(entries, "api.acme")
 	if !ok || e.Port != 3001 {
@@ -159,21 +139,18 @@ func TestFindByName(t *testing.T) {
 // --- upsert ---
 
 func TestUpsertInsert(t *testing.T) {
-	entries := []Entry{{Port: 3001, Name: "api.acme", Ingress: true}}
-	entries = upsert(entries, Entry{Port: 3002, Name: "db.acme", Ingress: false})
+	entries := []Entry{{Port: 3001, Name: "api.acme"}}
+	entries = upsert(entries, Entry{Port: 3002, Name: "db.acme"})
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
 	}
 }
 
 func TestUpsertUpdate(t *testing.T) {
-	entries := []Entry{{Port: 3001, Name: "api.acme", Ingress: true}}
-	entries = upsert(entries, Entry{Port: 3001, Name: "api.acme", Ingress: false})
+	entries := []Entry{{Port: 3001, Name: "api.acme"}}
+	entries = upsert(entries, Entry{Port: 3001, Name: "api.acme"})
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
-	}
-	if entries[0].Ingress {
-		t.Error("expected Ingress=false after update")
 	}
 }
 
@@ -181,9 +158,9 @@ func TestUpsertUpdate(t *testing.T) {
 
 func TestRemoveInactive(t *testing.T) {
 	entries := []Entry{
-		{Port: 3001, Name: "api.acme", Ingress: true},
-		{Port: 3002, Name: "db.acme", Ingress: false},
-		{Port: 3003, Name: "vite", Ingress: true},
+		{Port: 3001, Name: "api.acme"},
+		{Port: 3002, Name: "db.acme"},
+		{Port: 3003, Name: "vite"},
 	}
 	active := map[int]bool{3001: true, 3003: true}
 	result := removeInactive(entries, active)
@@ -226,8 +203,8 @@ func TestAllocateWithMin(t *testing.T) {
 
 func TestRemoveByName(t *testing.T) {
 	entries := []Entry{
-		{Port: 3001, Name: "api.acme", Ingress: true},
-		{Port: 3002, Name: "db.acme", Ingress: false},
+		{Port: 3001, Name: "api.acme"},
+		{Port: 3002, Name: "db.acme"},
 	}
 	result, ok := removeByName(entries, "api.acme")
 	if !ok {
@@ -246,9 +223,9 @@ func TestRemoveByName(t *testing.T) {
 // --- renderListening ---
 
 var testRows = []listeningRow{
-	{Port: 3001, Name: "api.acme", Ingress: "ingress", PID: 42, Process: "node"},
-	{Port: 3002, Name: "db.acme", Ingress: "no-ingress", PID: 99, Process: "postgres"},
-	{Port: 5173, Name: "", Ingress: "", PID: 0, Process: ""},
+	{Port: 3001, Name: "api.acme", PID: 42, Process: "node"},
+	{Port: 3002, Name: "db.acme", PID: 99, Process: "postgres"},
+	{Port: 5173, Name: "", PID: 0, Process: ""},
 }
 
 func TestRenderListeningJSON(t *testing.T) {
@@ -262,10 +239,10 @@ func TestRenderListeningJSON(t *testing.T) {
 	if len(got) != len(testRows) {
 		t.Fatalf("expected %d rows, got %d", len(testRows), len(got))
 	}
-	if got[0].Port != 3001 || got[0].Name != "api.acme" || got[0].Ingress != "ingress" || got[0].PID != 42 || got[0].Process != "node" {
+	if got[0].Port != 3001 || got[0].Name != "api.acme" || got[0].PID != 42 || got[0].Process != "node" {
 		t.Errorf("row 0 mismatch: %+v", got[0])
 	}
-	if got[1].Port != 3002 || got[1].Name != "db.acme" || got[1].Ingress != "no-ingress" || got[1].PID != 99 {
+	if got[1].Port != 3002 || got[1].Name != "db.acme" || got[1].PID != 99 {
 		t.Errorf("row 1 mismatch: %+v", got[1])
 	}
 	if got[2].Port != 5173 || got[2].PID != 0 || got[2].Name != "" {
@@ -278,7 +255,7 @@ func TestRenderListeningJSON(t *testing.T) {
 		t.Fatalf("raw unmarshal: %v", err)
 	}
 	third := string(raw[2])
-	for _, field := range []string{`"name"`, `"ingress"`, `"pid"`, `"process"`} {
+	for _, field := range []string{`"name"`, `"pid"`, `"process"`} {
 		if strings.Contains(third, field) {
 			t.Errorf("expected omitempty to drop %s from third row: %s", field, third)
 		}
@@ -299,8 +276,8 @@ func TestRenderListeningPlain(t *testing.T) {
 	if !strings.Contains(lines[0], "api.acme") {
 		t.Errorf("line 0 missing 'api.acme': %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "no-ingress") {
-		t.Errorf("line 1 missing 'no-ingress': %q", lines[1])
+	if !strings.Contains(lines[1], "db.acme") {
+		t.Errorf("line 1 missing 'db.acme': %q", lines[1])
 	}
 	if strings.HasSuffix(lines[2], " ") {
 		t.Errorf("line 2 has trailing space: %q", lines[2])
@@ -309,8 +286,8 @@ func TestRenderListeningPlain(t *testing.T) {
 
 func TestRenderListeningInterface(t *testing.T) {
 	rows := []listeningRow{
-		{Port: 3001, Host: "0.0.0.0", Name: "api.acme", Ingress: "ingress", PID: 42, Process: "node"},
-		{Port: 3001, Host: "127.0.0.1", Name: "api.acme", Ingress: "ingress", PID: 42, Process: "node"},
+		{Port: 3001, Host: "0.0.0.0", Name: "api.acme", PID: 42, Process: "node"},
+		{Port: 3001, Host: "127.0.0.1", Name: "api.acme", PID: 42, Process: "node"},
 	}
 	var buf bytes.Buffer
 	renderListening(rows, "plain", false, true, &buf)

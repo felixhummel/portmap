@@ -10,9 +10,8 @@ import (
 )
 
 type Entry struct {
-	Port    int
-	Name    string
-	Ingress bool // default true
+	Port int
+	Name string
 }
 
 func storePath() string {
@@ -46,13 +45,7 @@ func load() ([]Entry, error) {
 		if err != nil {
 			continue
 		}
-		e := Entry{Port: port, Name: fields[1], Ingress: true}
-		for _, f := range fields[2:] {
-			if f == "no-ingress" {
-				e.Ingress = false
-			}
-		}
-		entries = append(entries, e)
+		entries = append(entries, Entry{Port: port, Name: fields[1]})
 	}
 	return entries, scanner.Err()
 }
@@ -79,13 +72,18 @@ func save(entries []Entry) error {
 
 	w := bufio.NewWriter(f)
 	for _, e := range entries {
-		line := fmt.Sprintf("%-5d %-*s", e.Port, maxName, e.Name)
-		if !e.Ingress {
-			line += " no-ingress"
-		}
-		fmt.Fprintln(w, strings.TrimRight(line, " "))
+		fmt.Fprintln(w, strings.TrimRight(fmt.Sprintf("%-5d %-*s", e.Port, maxName, e.Name), " "))
 	}
 	return w.Flush()
+}
+
+func findByPort(entries []Entry, port int) (Entry, bool) {
+	for _, e := range entries {
+		if e.Port == port {
+			return e, true
+		}
+	}
+	return Entry{}, false
 }
 
 func findByName(entries []Entry, name string) (Entry, bool) {
@@ -105,6 +103,15 @@ func upsert(entries []Entry, e Entry) []Entry {
 		}
 	}
 	return append(entries, e)
+}
+
+func removeByPort(entries []Entry, port int) ([]Entry, bool) {
+	for i, e := range entries {
+		if e.Port == port {
+			return append(entries[:i], entries[i+1:]...), true
+		}
+	}
+	return entries, false
 }
 
 func removeByName(entries []Entry, name string) ([]Entry, bool) {
